@@ -19,11 +19,13 @@ import (
 
 // stubStreamer is a fake llm.Streamer that returns a fixed SSE body.
 type stubStreamer struct {
-	body string
-	err  error
+	body         string
+	err          error
+	capturedMsgs []store.Message // last call's messages
 }
 
-func (s *stubStreamer) Stream(_ context.Context, _ []store.Message, _ string) (io.ReadCloser, error) {
+func (s *stubStreamer) Stream(_ context.Context, msgs []store.Message, _ string) (io.ReadCloser, error) {
+	s.capturedMsgs = msgs
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -231,6 +233,69 @@ func TestHandler_PostChat_NoVaultEventWhenNoToolCall(t *testing.T) {
 		if ev.event == "vault" {
 			t.Errorf("unexpected vault SSE event: %v", ev)
 		}
+	}
+}
+
+func TestHandler_PostChat_InjectsAttachmentDescriptionIntoContext(t *testing.T) {
+	// Arrange — write an attachment sidecar so the handler can look it up.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	attachPath, _ := vm.SaveAttachment("photo.png", []byte("x"))
+	_ = vm.WriteAttachmentMeta(attachPath, vault.AttachmentMeta{
+		ID:           "att_photo",
+		OriginalName: "photo.png",
+		MediaType:    "image/png",
+		Description:  "a sunset over mountains",
+	})
+
+	cs := store.NewMemChatStore()
+	streamer := &stubStreamer{body: minimalAnthropicSSE}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{
+		"message":        {"What do you see?"},
+		"attachment_ids": {attachPath},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — the streamer must have received the attachment description in
+	// the message history sent to the LLM.
+	found := false
+	for _, msg := range streamer.capturedMsgs {
+		if strings.Contains(msg.Content, "a sunset over mountains") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected attachment description in LLM context; messages: %v", streamer.capturedMsgs)
+	}
+}
+
+func TestHandler_PostChat_UnknownAttachmentIDIsSkipped(t *testing.T) {
+	// Arrange — attachment ID that has no sidecar in the vault.
+	h := newTestHandler(t, &stubStreamer{body: minimalAnthropicSSE})
+	form := url.Values{
+		"message":        {"hello"},
+		"attachment_ids": {"_attachments/nonexistent-20260413-aaaaaa.png"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — request succeeds; unknown attachment is silently skipped.
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
 	}
 }
 

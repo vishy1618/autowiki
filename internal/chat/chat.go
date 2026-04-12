@@ -47,6 +47,29 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve attachment context: load sidecar metadata for each referenced
+	// attachment and prepend descriptions to the user message.
+	attachmentIDs := r.Form["attachment_ids"]
+	if len(attachmentIDs) > 0 {
+		var contextLines []string
+		for _, id := range attachmentIDs {
+			meta, err := h.vault.ReadAttachmentMeta(id)
+			if err != nil {
+				continue // silently skip unknown/missing attachments
+			}
+			if meta.Description != "" {
+				contextLines = append(contextLines,
+					fmt.Sprintf("[Attached: %s — %s]", meta.OriginalName, meta.Description))
+			} else {
+				contextLines = append(contextLines,
+					fmt.Sprintf("[Attached: %s]", meta.OriginalName))
+			}
+		}
+		if len(contextLines) > 0 {
+			message = strings.Join(contextLines, "\n") + "\n\n" + message
+		}
+	}
+
 	// Resolve or create the active session.
 	session, err := h.store.ResolveSession()
 	if err != nil {
