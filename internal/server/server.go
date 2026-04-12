@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/suvish/autowiki/internal/auth"
+	"github.com/suvish/autowiki/internal/chat"
 	"github.com/suvish/autowiki/internal/config"
 	"github.com/suvish/autowiki/internal/store"
 )
@@ -20,10 +21,18 @@ type Server struct {
 	dev      bool
 	sessions store.SessionStore
 	chats    store.ChatStore
+	streamer chat.Streamer
 }
 
-func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, dev bool) *Server {
-	s := &Server{cfg: cfg, mux: http.NewServeMux(), dev: dev, sessions: sessions, chats: chats}
+func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, streamer chat.Streamer, dev bool) *Server {
+	s := &Server{
+		cfg:      cfg,
+		mux:      http.NewServeMux(),
+		dev:      dev,
+		sessions: sessions,
+		chats:    chats,
+		streamer: streamer,
+	}
 	s.routes()
 	return s
 }
@@ -47,6 +56,7 @@ func (s *Server) routes() {
 
 	// Protected API routes.
 	s.mux.Handle("/api/health", mw.Require(http.HandlerFunc(s.handleHealth)))
+	s.mux.Handle("/api/chat", mw.Require(chat.NewHandler(s.chats, s.streamer)))
 
 	// All non-API routes serve the SPA unconditionally. Auth is enforced
 	// client-side; the server only protects /api/* data endpoints.

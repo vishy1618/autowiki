@@ -7,6 +7,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/suvish/autowiki/internal/config"
+	"github.com/suvish/autowiki/internal/llm"
 	"github.com/suvish/autowiki/internal/server"
 	"github.com/suvish/autowiki/internal/store"
 )
@@ -36,8 +37,9 @@ func main() {
 
 	sessions := store.NewPebbleStore(db)
 	chats := store.NewPebbleChatStore(db)
+	llmClient := llm.NewClient(llm.Config{APIKey: cfg.AnthropicAPIKey})
 
-	srv := server.New(cfg, sessions, chats, *dev)
+	srv := server.New(cfg, sessions, chats, llmClient, *dev)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
