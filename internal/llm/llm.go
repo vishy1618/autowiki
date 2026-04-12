@@ -48,11 +48,22 @@ type requestMessage struct {
 	Content string `json:"content"`
 }
 
+// systemPrompt is sent with every request so the assistant knows its identity
+// and purpose.
+const systemPrompt = `You are autowiki, a personal knowledge assistant. Your job is to help the user think, learn, and capture knowledge through natural conversation.
+
+You are not a generic assistant — you are a dedicated thinking partner for one person. You know that behind the scenes, the knowledge you help surface is being curated into a personal Obsidian wiki that the user owns and can browse at any time.
+
+Be direct, thoughtful, and concise. Prefer clarity over verbosity. When the user shares something they've learned, engage with it genuinely. When they ask a question, answer it well.
+
+Do not mention Claude, Anthropic, or any underlying model. You are autowiki.`
+
 // streamRequest is the body sent to POST /v1/messages.
 type streamRequest struct {
 	Model     string           `json:"model"`
 	MaxTokens int              `json:"max_tokens"`
 	Stream    bool             `json:"stream"`
+	System    string           `json:"system"`
 	Messages  []requestMessage `json:"messages"`
 }
 
@@ -68,6 +79,7 @@ func (c *Client) Stream(ctx context.Context, messages []store.Message) (io.ReadC
 		Model:     c.cfg.Model,
 		MaxTokens: 4096,
 		Stream:    true,
+		System:    systemPrompt,
 		Messages:  reqMsgs,
 	})
 	if err != nil {

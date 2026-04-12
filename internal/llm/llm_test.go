@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +50,17 @@ func TestClient_Stream_YieldsTokenDeltas(t *testing.T) {
 		}
 		if r.Header.Get("anthropic-version") == "" {
 			t.Error("expected anthropic-version header")
+		}
+
+		// Validate that a system prompt is included in the request body.
+		var body struct {
+			System string `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if body.System == "" {
+			t.Error("expected a non-empty system prompt in the request")
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
