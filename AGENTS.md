@@ -87,4 +87,5 @@ Fix session cookie expiry not persisting across restarts
 
 ## Current Status
 
-Boilerplate is in place (Go server, Remix scaffold, config, Makefile). No stories are implemented yet. Work through stories in order: US-01 first (Google auth), then US-02, and so on. Each story file in `blueprint/user-stories/` has an implementation checklist.
+- **US-01 — Sign in with Google**: Complete. Pebble session store, Google OAuth flow, session cookie, `/api/auth/me` probe, `/login` page, client-side auth guard.
+- **US-02 through US-11**: Not started. Work through stories in order; each file in `blueprint/user-stories/` has an implementation checklist.
