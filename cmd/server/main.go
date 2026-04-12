@@ -8,6 +8,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/suvish/autowiki/internal/config"
 	"github.com/suvish/autowiki/internal/server"
+	"github.com/suvish/autowiki/internal/store"
 )
 
 func main() {
@@ -27,7 +28,13 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	srv := server.New(cfg, *dev)
+	sessions, err := store.NewPebbleStore(cfg.PebblePath)
+	if err != nil {
+		log.Fatalf("failed to open pebble store: %v", err)
+	}
+	defer sessions.Close()
+
+	srv := server.New(cfg, sessions, *dev)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
