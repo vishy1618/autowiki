@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/suvish/autowiki/internal/chat"
 	"github.com/suvish/autowiki/internal/store"
+	"github.com/suvish/autowiki/internal/vault"
 )
 
 // stubStreamer is a fake llm.Streamer that returns a fixed SSE body.
@@ -37,14 +40,41 @@ data: {"type":"message_stop"}
 
 `
 
-func newTestHandler(streamer chat.Streamer) http.Handler {
+// toolUseAnthropicSSE is a streaming response where the model emits a text
+// reply AND calls the save_to_vault tool.
+const toolUseAnthropicSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Saving that for you."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool_abc","name":"save_to_vault","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"pages\":[{\"path\":\"notes/test.md\",\"content\":\"# Test\"}]}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func newTestHandler(t *testing.T, streamer chat.Streamer) http.Handler {
+	t.Helper()
 	cs := store.NewMemChatStore()
-	return chat.NewHandler(cs, streamer)
+	vm := vault.NewManager(t.TempDir())
+	return chat.NewHandler(cs, streamer, vm)
 }
 
 func TestHandler_PostChat_StreamsDeltaAndDoneEvents(t *testing.T) {
 	// Arrange
-	h := newTestHandler(&stubStreamer{body: minimalAnthropicSSE})
+	h := newTestHandler(t, &stubStreamer{body: minimalAnthropicSSE})
 	form := url.Values{"message": {"hello"}}
 	req := httptest.NewRequest(http.MethodPost, "/api/chat",
 		strings.NewReader(form.Encode()))
@@ -90,7 +120,7 @@ func TestHandler_PostChat_StreamsDeltaAndDoneEvents(t *testing.T) {
 
 func TestHandler_PostChat_MissingMessage_Returns400(t *testing.T) {
 	// Arrange — no message field
-	h := newTestHandler(&stubStreamer{body: minimalAnthropicSSE})
+	h := newTestHandler(t, &stubStreamer{body: minimalAnthropicSSE})
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(""))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
@@ -107,7 +137,8 @@ func TestHandler_PostChat_MissingMessage_Returns400(t *testing.T) {
 func TestHandler_PostChat_PersistsUserAndAssistantMessages(t *testing.T) {
 	// Arrange
 	cs := store.NewMemChatStore()
-	h := chat.NewHandler(cs, &stubStreamer{body: minimalAnthropicSSE})
+	vm := vault.NewManager(t.TempDir())
+	h := chat.NewHandler(cs, &stubStreamer{body: minimalAnthropicSSE}, vm)
 	form := url.Values{"message": {"remember this"}}
 	req := httptest.NewRequest(http.MethodPost, "/api/chat",
 		strings.NewReader(form.Encode()))
@@ -140,6 +171,66 @@ func TestHandler_PostChat_PersistsUserAndAssistantMessages(t *testing.T) {
 	}
 	if msgs[1].Content == "" {
 		t.Error("expected non-empty assistant content")
+	}
+}
+
+func TestHandler_PostChat_WritesVaultAndEmitsVaultEvent(t *testing.T) {
+	// Arrange
+	cs := store.NewMemChatStore()
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	h := chat.NewHandler(cs, &stubStreamer{body: toolUseAnthropicSSE}, vm)
+
+	form := url.Values{"message": {"I learned about Go interfaces"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — vault file was written
+	content, err := os.ReadFile(filepath.Join(vaultDir, "notes/test.md"))
+	if err != nil {
+		t.Fatalf("expected vault file to be created: %v", err)
+	}
+	if string(content) != "# Test" {
+		t.Errorf("unexpected vault content: %q", string(content))
+	}
+
+	// Assert — vault SSE event emitted
+	events := parseSSE(t, w.Body.String())
+	hasVault := false
+	for _, ev := range events {
+		if ev.event == "vault" && strings.Contains(ev.data, "notes/test.md") {
+			hasVault = true
+			break
+		}
+	}
+	if !hasVault {
+		t.Errorf("expected vault SSE event with path, got events: %v", events)
+	}
+}
+
+func TestHandler_PostChat_NoVaultEventWhenNoToolCall(t *testing.T) {
+	// Arrange — streamer returns text-only response (no tool call)
+	h := newTestHandler(t, &stubStreamer{body: minimalAnthropicSSE})
+	form := url.Values{"message": {"hello"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — no vault event
+	events := parseSSE(t, w.Body.String())
+	for _, ev := range events {
+		if ev.event == "vault" {
+			t.Errorf("unexpected vault SSE event: %v", ev)
+		}
 	}
 }
 

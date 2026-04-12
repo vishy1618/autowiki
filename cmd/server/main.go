@@ -10,6 +10,7 @@ import (
 	"github.com/suvish/autowiki/internal/llm"
 	"github.com/suvish/autowiki/internal/server"
 	"github.com/suvish/autowiki/internal/store"
+	"github.com/suvish/autowiki/internal/vault"
 )
 
 func main() {
@@ -38,8 +39,9 @@ func main() {
 	sessions := store.NewPebbleStore(db)
 	chats := store.NewPebbleChatStore(db)
 	llmClient := llm.NewClient(llm.Config{APIKey: cfg.AnthropicAPIKey})
+	vm := vault.NewManager(cfg.VaultPath)
 
-	srv := server.New(cfg, sessions, chats, llmClient, *dev)
+	srv := server.New(cfg, sessions, chats, llmClient, vm, *dev)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
