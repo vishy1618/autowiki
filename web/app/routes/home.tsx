@@ -25,11 +25,17 @@ export default function Home() {
       .catch(() => navigate("/login", { replace: true }));
   }, [navigate]);
 
+  async function handleSignOut() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    navigate("/login", { replace: true });
+  }
+
   if (!email) return null;
 
   return (
     <main style={{ padding: "2rem", fontFamily: "Inter, sans-serif" }}>
       <p>Signed in as {email}</p>
+      <button onClick={handleSignOut}>Sign out</button>
     </main>
   );
 }

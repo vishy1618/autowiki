@@ -61,6 +61,26 @@ func (h *Handler) WithHTTPClient(c *http.Client) {
 	h.httpClient = c
 }
 
+// Logout deletes the session from the store and clears the session cookie.
+// It is a no-op (still returns 200) if no valid cookie is present.
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		h.sessions.DeleteSession(cookie.Value)
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	w.WriteHeader(http.StatusOK)
+}
+
 // Me returns the authenticated user's email as JSON, or 401 if not logged in.
 // The frontend uses this as a lightweight auth probe on page load.
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {

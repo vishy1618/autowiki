@@ -42,6 +42,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/login", authHandler.Login)
 	s.mux.HandleFunc("/api/auth/callback", authHandler.Callback)
 	s.mux.HandleFunc("/api/auth/me", authHandler.Me)
+	s.mux.HandleFunc("/api/auth/logout", authHandler.Logout)
 
 	// Protected API routes.
 	s.mux.Handle("/api/health", mw.Require(http.HandlerFunc(s.handleHealth)))
