@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -92,6 +93,96 @@ type streamRequest struct {
 	Messages   []requestMessage `json:"messages"`
 	Tools      []any            `json:"tools"`
 	ToolChoice map[string]any   `json:"tool_choice"`
+}
+
+// describeImagePrompt is sent with the image so the LLM produces a concise
+// description suitable for knowledge indexing.
+const describeImagePrompt = "Describe this image concisely in 1–3 sentences. Focus on the key information it conveys, suitable for indexing in a personal knowledge base."
+
+// describeRequest is the non-streaming request body for image description.
+type describeRequest struct {
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens"`
+	Messages  []struct {
+		Role    string `json:"role"`
+		Content []any  `json:"content"`
+	} `json:"messages"`
+}
+
+// describeResponse is the non-streaming response body.
+type describeResponse struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// DescribeImage sends the image to the Anthropic vision API and returns a
+// concise description. mediaType should be e.g. "image/png" or "image/jpeg".
+func (c *Client) DescribeImage(ctx context.Context, data []byte, mediaType string) (string, error) {
+	encoded := base64.StdEncoding.EncodeToString(data)
+
+	reqBody := describeRequest{
+		Model:     c.cfg.Model,
+		MaxTokens: 512,
+		Messages: []struct {
+			Role    string `json:"role"`
+			Content []any  `json:"content"`
+		}{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type": "image",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": mediaType,
+							"data":       encoded,
+						},
+					},
+					map[string]any{
+						"type": "text",
+						"text": describeImagePrompt,
+					},
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshalling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.cfg.BaseURL+messagesPath, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.cfg.APIKey)
+	req.Header.Set("anthropic-version", anthropicVersion)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("anthropic API returned %d", resp.StatusCode)
+	}
+
+	var result describeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding response: %w", err)
+	}
+	for _, block := range result.Content {
+		if block.Type == "text" {
+			return block.Text, nil
+		}
+	}
+	return "", nil
 }
 
 // Stream opens a streaming request to the Anthropic Messages API and returns

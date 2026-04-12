@@ -114,6 +114,73 @@ func TestClient_Stream_YieldsTokenDeltas(t *testing.T) {
 	}
 }
 
+func TestClient_DescribeImage_SendsBase64ImageAndReturnsDescription(t *testing.T) {
+	// Arrange — stub server validates vision request shape and returns a description
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content []struct {
+					Type   string `json:"type"`
+					Source *struct {
+						Type      string `json:"type"`
+						MediaType string `json:"media_type"`
+						Data      string `json:"data"`
+					} `json:"source,omitempty"`
+					Text string `json:"text,omitempty"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if len(body.Messages) == 0 {
+			t.Error("expected at least one message")
+		}
+		content := body.Messages[0].Content
+		hasImage := false
+		for _, block := range content {
+			if block.Type == "image" && block.Source != nil && block.Source.Type == "base64" {
+				hasImage = true
+			}
+		}
+		if !hasImage {
+			t.Error("expected image content block with base64 source")
+		}
+
+		// Return a non-streaming JSON response (DescribeImage uses non-streaming).
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"content":[{"type":"text","text":"a red circle on white background"}],"stop_reason":"end_turn"}`)
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+
+	desc, err := client.DescribeImage(t.Context(), []byte("fakeimgdata"), "image/png")
+
+	if err != nil {
+		t.Fatalf("DescribeImage: %v", err)
+	}
+	if desc != "a red circle on white background" {
+		t.Errorf("want description %q, got %q", "a red circle on white background", desc)
+	}
+}
+
+func TestClient_DescribeImage_ReturnsErrorOnNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"type":"authentication_error"}}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "bad-key", BaseURL: srv.URL})
+
+	_, err := client.DescribeImage(t.Context(), []byte("x"), "image/png")
+
+	if err == nil {
+		t.Fatal("expected error on 401 response, got nil")
+	}
+}
+
 func TestClient_Stream_ReturnsErrorOnNon200(t *testing.T) {
 	// Arrange
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
