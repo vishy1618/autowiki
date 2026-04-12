@@ -11,7 +11,7 @@ type Config struct {
 	VaultPath      string     `yaml:"vault_path"`
 	ServerPort     int        `yaml:"server_port"`
 	AnthropicAPIKey string    `yaml:"anthropic_api_key"`
-	RocksDBPath    string     `yaml:"rocksdb_path"`
+	PebblePath    string     `yaml:"pebble_path"`
 	Auth           AuthConfig `yaml:"auth"`
 	Dream          DreamConfig `yaml:"dream"`
 }
@@ -58,8 +58,8 @@ func (c *Config) validate() error {
 	if c.VaultPath == "" {
 		return fmt.Errorf("VAULT_PATH is required")
 	}
-	if c.RocksDBPath == "" {
-		return fmt.Errorf("ROCKSDB_PATH is required")
+	if c.PebblePath == "" {
+		return fmt.Errorf("PEBBLE_PATH is required")
 	}
 	if c.AnthropicAPIKey == "" {
 		return fmt.Errorf("ANTHROPIC_API_KEY is required")

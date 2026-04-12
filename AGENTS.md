@@ -16,7 +16,7 @@ autowiki is a self-maintaining personal knowledge base. A Go HTTP server + Remix
 | Frontend | React Router v7 (Remix), SPA mode (`ssr: false`) |
 | LLM | Claude Sonnet (`claude-sonnet-4-6`) |
 | Auth | Google OAuth 2.0 + signed HTTP-only session cookies |
-| Chat history | RocksDB (`grocksdb`) |
+| Chat history | Pebble (`cockroachdb/pebble`) |
 | Wiki storage | Markdown files in an Obsidian vault (path from env) |
 | Streaming | Server-Sent Events (SSE) |
 
@@ -30,7 +30,7 @@ internal/auth/              Google OAuth flow, session middleware
 internal/chat/              SSE streaming, session management
 internal/vault/             Obsidian vault read/write
 internal/llm/               Claude API client
-internal/store/             RocksDB — chat history + auth sessions
+internal/store/             Pebble — chat history + auth sessions
 internal/dream/             Nightly curation goroutine
 web/                        Remix SPA source
 public/                     Built Remix output (served by Go, gitignored)
@@ -44,7 +44,7 @@ All config is driven by environment variables. The server loads `.env` from the 
 ```
 PORT                    defaults to 8080
 VAULT_PATH              path to the Obsidian vault (outside the repo)
-ROCKSDB_PATH            path to RocksDB data directory
+PEBBLE_PATH             path to Pebble data directory
 ANTHROPIC_API_KEY
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
@@ -63,7 +63,7 @@ make dev-server   # Go server in --dev mode (proxies non-/api to port 5173)
 ## Architecture Decisions Worth Knowing
 
 - **`/api/*`** is reserved for Go handlers. Everything else is served as the Remix SPA (or proxied to the Remix dev server in `--dev` mode).
-- **Sessions** are a backend-only concept (30-min inactivity boundary, stored in RocksDB). The UI presents one continuous infinite-scroll chat timeline — no session concept is exposed to the user.
+- **Sessions** are a backend-only concept (30-min inactivity boundary, stored in Pebble). The UI presents one continuous infinite-scroll chat timeline — no session concept is exposed to the user.
 - **Vault writes are automatic** — the LLM judges whether each message warrants a write. It may write nothing at all (e.g. for greetings or pure queries).
 - **Dream state** is a goroutine that wakes between 1–5am IST nightly to reorganise the vault. It runs at most once per night and logs changes to `log.md`.
 - **The Obsidian vault lives outside the repo** at `VAULT_PATH`. `internal/vault` is Go code, not vault data.

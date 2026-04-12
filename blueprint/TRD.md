@@ -12,7 +12,7 @@ Browser (Remix SPA)
      Claude Sonnet (Anthropic API)
            ↕
      Obsidian Vault (markdown files on disk)
-     RocksDB (chat history)
+     Pebble (chat history)
 ```
 
 The Go server is the single process. It serves the frontend, handles all API calls, manages vault reads/writes, and runs the dream state goroutine.
@@ -27,8 +27,8 @@ The Go server is the single process. It serves the frontend, handles all API cal
 | Frontend | React Router (Remix) |
 | LLM | Claude Sonnet (`claude-sonnet-4-6`) via Anthropic API |
 | Auth | Google OAuth 2.0 (`golang.org/x/oauth2`) |
-| Sessions | Signed HTTP-only cookies (session token → RocksDB) |
-| Chat history | RocksDB (`grocksdb` Go bindings) |
+| Sessions | Signed HTTP-only cookies (session token → Pebble) |
+| Chat history | Pebble (`cockroachdb/pebble` Go bindings) |
 | Wiki storage | Markdown files (Obsidian vault on local disk) |
 | Streaming | Server-Sent Events (SSE) |
 | Build | Makefile |
@@ -46,7 +46,7 @@ autowiki/
 │   ├── chat/          # SSE streaming, session management, intent detection
 │   ├── vault/         # Read/write markdown, wikilinks, attachments, index/log
 │   ├── llm/           # Claude API client, prompt templates
-│   ├── store/         # RocksDB — chat sessions, message history, auth sessions
+│   ├── store/         # Pebble — chat sessions, message history, auth sessions
 │   └── dream/         # Background goroutine, nighttime IST scheduler
 ├── web/               # Remix app source
 │   └── app/
@@ -73,7 +73,7 @@ autowiki/
 
 - Implements Google OAuth 2.0 using `golang.org/x/oauth2`.
 - On successful Google sign-in, the returned email is checked against `allowed_email` in `config.yaml`. Any mismatch returns a 403 and does not create a session.
-- On success, a signed HTTP-only session cookie is issued. The session token is stored in RocksDB with an expiry.
+- On success, a signed HTTP-only session cookie is issued. The session token is stored in Pebble with an expiry.
 - An auth middleware wraps all `/api/*` routes (except the OAuth endpoints themselves). Unauthenticated requests to `/api/*` return 401. Unauthenticated requests to any other route are redirected to the sign-in page.
 - The Remix frontend has a single `/login` route that renders the "Sign in with Google" button. All other routes require a valid session.
 
@@ -105,7 +105,7 @@ All pipelines receive `schema.md` as part of the system prompt to enforce wiki c
 
 ### 4.6 Chat History Store (`internal/store`)
 
-- Uses RocksDB as the storage engine via `grocksdb` Go bindings.
+- Uses Pebble as the storage engine via `cockroachdb/pebble` Go bindings.
 - Key schema:
 
   ```
@@ -121,7 +121,7 @@ All pipelines receive `schema.md` as part of the system prompt to enforce wiki c
 
 - A goroutine launched at server boot.
 - Sleeps until the next 1:00 AM IST (UTC+5:30) window. Runs until 5:00 AM IST.
-- Runs at most once per calendar night (tracks last run date in RocksDB).
+- Runs at most once per calendar night (tracks last run date in Pebble).
 - During the window, submits the full vault to the LLM for curation:
   - Identify orphan pages (no inbound links).
   - Identify broken `[[wikilinks]]`.
@@ -147,7 +147,7 @@ All pipelines receive `schema.md` as part of the system prompt to enforce wiki c
 
 Session boundary is determined by inactivity:
 
-- On each incoming message, read `last_active_at` of the current session from RocksDB.
+- On each incoming message, read `last_active_at` of the current session from Pebble.
 - If `last_active_at` is more than **30 minutes** ago (or no session exists), create a new session.
 - Otherwise, append the message to the current session and update `last_active_at`.
 
@@ -177,14 +177,14 @@ Google redirects here after consent. The server:
 1. Exchanges the code for a token.
 2. Fetches the user's email from Google.
 3. Checks the email against `allowed_email` in config — rejects with 403 if it does not match.
-4. Creates a signed session token, stores it in RocksDB with expiry, and sets it as an HTTP-only cookie.
+4. Creates a signed session token, stores it in Pebble with expiry, and sets it as an HTTP-only cookie.
 5. Redirects to `/`.
 
 ---
 
 ### `POST /api/auth/logout`
 
-Deletes the session token from RocksDB and clears the cookie.
+Deletes the session token from Pebble and clears the cookie.
 
 ---
 
@@ -278,7 +278,7 @@ Two processes run in parallel:
 vault_path: ~/path/to/your/obsidian/vault   # must be outside the repo; points to the live Obsidian vault on disk
 server_port: 8080
 anthropic_api_key: ${ANTHROPIC_API_KEY}
-rocksdb_path: ~/.autowiki/db
+pebble_path: ~/.autowiki/db
 auth:
   google_client_id: ${GOOGLE_CLIENT_ID}
   google_client_secret: ${GOOGLE_CLIENT_SECRET}
