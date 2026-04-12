@@ -301,6 +301,112 @@ describe("Home — chat UI", () => {
     );
   });
 
+  it("file picker triggers POST /api/attachments upload", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ id: "att_photo", path: "_attachments/photo-20260413-abc123.png", description: "a sunset" }),
+        { status: 200 }
+      )
+    );
+
+    const user = userEvent.setup();
+    renderHome();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    const input = screen.getByTestId("file-input") as HTMLInputElement;
+    const file = new File(["imgdata"], "photo.png", { type: "image/png" });
+    await user.upload(input, file);
+
+    await waitFor(() => {
+      const uploadCall = fetchSpy.mock.calls.find(([url]) => url === "/api/attachments");
+      expect(uploadCall).toBeDefined();
+    });
+  });
+
+  it("shows attachment chip after upload completes", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ id: "att_photo", path: "_attachments/photo-20260413-abc123.png", description: "a sunset" }),
+        { status: 200 }
+      )
+    );
+
+    const user = userEvent.setup();
+    renderHome();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    const input = screen.getByTestId("file-input") as HTMLInputElement;
+    const file = new File(["imgdata"], "photo.png", { type: "image/png" });
+    await user.upload(input, file);
+
+    await waitFor(() =>
+      expect(screen.getByText(/photo\.png/)).toBeInTheDocument()
+    );
+  });
+
+  it("sends attachment_ids with the chat message", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    // Upload response
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ id: "att_photo", path: "_attachments/photo-20260413-abc123.png", description: "a sunset" }),
+        { status: 200 }
+      )
+    );
+    // Chat response
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        sseStream("event: done\ndata: {\"session_id\":\"s1\"}\n\n"),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    const user = userEvent.setup();
+    renderHome();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    // Upload a file
+    const input = screen.getByTestId("file-input") as HTMLInputElement;
+    const file = new File(["imgdata"], "photo.png", { type: "image/png" });
+    await user.upload(input, file);
+    await waitFor(() => expect(screen.getByText(/photo\.png/)).toBeInTheDocument());
+
+    // Send a message
+    await user.type(screen.getByPlaceholderText(/message autowiki/i), "What is this?");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() => {
+      const chatCall = fetchSpy.mock.calls.find(([url]) => url === "/api/chat");
+      expect(chatCall).toBeDefined();
+      const body = chatCall![1]?.body as string;
+      expect(body).toContain("attachment_ids");
+      expect(body).toContain("_attachments%2Fphoto");
+    });
+  });
+
   it("does not show vault summary when no vault event", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 

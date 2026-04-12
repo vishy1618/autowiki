@@ -12,11 +12,20 @@ interface VaultChange {
   path: string;
 }
 
+interface PendingAttachment {
+  localId: string;       // client-side id for tracking
+  file: File;
+  uploading: boolean;
+  path?: string;         // vault-relative path returned by server
+  previewUrl?: string;   // object URL for images
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
   vaultChanges?: VaultChange[];
+  attachments?: PendingAttachment[];
 }
 
 export default function Home() {
@@ -26,8 +35,11 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [dragOver, setDragOver] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -52,23 +64,90 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  async function uploadFile(file: File) {
+    const localId = crypto.randomUUID();
+    const previewUrl = file.type.startsWith("image/")
+      ? URL.createObjectURL(file)
+      : undefined;
+
+    setPendingAttachments((prev) => [
+      ...prev,
+      { localId, file, uploading: true, previewUrl },
+    ]);
+
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const resp = await fetch("/api/attachments", { method: "POST", body: form });
+      if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
+      const data = await resp.json() as { path: string };
+      setPendingAttachments((prev) =>
+        prev.map((a) =>
+          a.localId === localId ? { ...a, uploading: false, path: data.path } : a
+        )
+      );
+    } catch {
+      // Remove the failed attachment.
+      setPendingAttachments((prev) => prev.filter((a) => a.localId !== localId));
+    }
+  }
+
+  function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    for (const file of Array.from(e.target.files ?? [])) {
+      uploadFile(file);
+    }
+    // Reset so the same file can be re-selected.
+    e.target.value = "";
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(true);
+  }
+
+  function handleDragLeave() {
+    setDragOver(false);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    for (const file of Array.from(e.dataTransfer.files)) {
+      uploadFile(file);
+    }
+  }
+
+  function dismissAttachment(localId: string) {
+    setPendingAttachments((prev) => {
+      const att = prev.find((a) => a.localId === localId);
+      if (att?.previewUrl) URL.revokeObjectURL(att.previewUrl);
+      return prev.filter((a) => a.localId !== localId);
+    });
+  }
+
   async function sendMessage() {
     const text = input.trim();
     if (!text || sending) return;
 
+    const readyAttachments = pendingAttachments.filter((a) => !a.uploading && a.path);
+
     setInput("");
+    setPendingAttachments([]);
     setError(null);
     setSending(true);
     inputRef.current?.focus();
 
     setMessages((prev) => [
       ...prev,
-      { role: "user", content: text },
+      { role: "user", content: text, attachments: readyAttachments },
       { role: "assistant", content: "", streaming: true },
     ]);
 
     try {
       const body = new URLSearchParams({ message: text });
+      for (const att of readyAttachments) {
+        body.append("attachment_ids", att.path!);
+      }
       const resp = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -171,7 +250,25 @@ export default function Home() {
   if (!ready) return null;
 
   return (
-    <div style={styles.layout}>
+    <div
+      style={styles.layout}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Drag-and-drop overlay */}
+      {dragOver && <div style={styles.dropOverlay}>Drop files to attach</div>}
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        data-testid="file-input"
+        type="file"
+        multiple
+        style={{ display: "none" }}
+        onChange={handleFileInputChange}
+      />
+
       {/* Header */}
       <header style={styles.header}>
         <span style={styles.logo}>autowiki</span>
@@ -196,6 +293,27 @@ export default function Home() {
             <span style={styles.roleLabel}>
               {msg.role === "user" ? "You" : "Assistant"}
             </span>
+            {msg.role === "user" && msg.attachments && msg.attachments.length > 0 && (
+              <div style={styles.attachmentRow}>
+                {msg.attachments.map((att) =>
+                  att.previewUrl ? (
+                    <img
+                      key={att.localId}
+                      src={att.previewUrl}
+                      alt={att.file.name}
+                      style={styles.attachmentThumb}
+                    />
+                  ) : (
+                    <div key={att.localId} style={styles.attachmentFileCard}>
+                      <span style={styles.attachmentFileExt}>
+                        {att.file.name.split(".").pop()?.toUpperCase() ?? "FILE"}
+                      </span>
+                      <span style={styles.attachmentFileName}>{att.file.name}</span>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
             {msg.role === "assistant" ? (
               <div style={styles.bubbleText}>
                 <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
@@ -224,22 +342,59 @@ export default function Home() {
 
       {/* Input bar */}
       <div style={styles.inputBar}>
-        <textarea
-          ref={inputRef}
-          style={styles.textarea}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Message autowiki… (Enter to send, Shift+Enter for newline)"
-          rows={3}
-        />
-        <button
-          onClick={sendMessage}
-          disabled={sending || !input.trim()}
-          style={styles.sendBtn}
-        >
-          {sending ? "…" : "Send"}
-        </button>
+        {/* Pending attachment chips */}
+        {pendingAttachments.length > 0 && (
+          <div style={styles.attachmentChips}>
+            {pendingAttachments.map((att) => (
+              <div key={att.localId} style={styles.chip}>
+                {att.previewUrl ? (
+                  <img src={att.previewUrl} alt={att.file.name} style={styles.chipThumb} />
+                ) : (
+                  <span style={styles.chipFileExt}>
+                    {att.file.name.split(".").pop()?.toUpperCase() ?? "FILE"}
+                  </span>
+                )}
+                <span style={styles.chipName}>{att.file.name}</span>
+                {att.uploading && <span style={styles.chipStatus}>↑</span>}
+                {!att.uploading && (
+                  <button
+                    onClick={() => dismissAttachment(att.localId)}
+                    style={styles.chipDismiss}
+                    aria-label="Remove attachment"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={styles.inputRow}>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={styles.attachBtn}
+            title="Attach file"
+            aria-label="Attach file"
+          >
+            📎
+          </button>
+          <textarea
+            ref={inputRef}
+            style={styles.textarea}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Message autowiki… (Enter to send, Shift+Enter for newline)"
+            rows={3}
+          />
+          <button
+            onClick={sendMessage}
+            disabled={sending || !input.trim()}
+            style={styles.sendBtn}
+          >
+            {sending ? "…" : "Send"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -330,10 +485,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   inputBar: {
     display: "flex",
-    gap: "0.75rem",
+    flexDirection: "column" as const,
+    gap: "0.5rem",
     padding: "1rem 1.5rem",
     borderTop: "1px solid #e5e5e5",
     background: "#fff",
+  },
+  inputRow: {
+    display: "flex",
+    gap: "0.75rem",
     alignItems: "flex-end",
   },
   textarea: {
@@ -359,6 +519,117 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.95rem",
     fontWeight: 500,
     height: "fit-content",
+  },
+  dropOverlay: {
+    position: "fixed" as const,
+    inset: 0,
+    background: "rgba(0,0,0,0.35)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "1.25rem",
+    color: "#fff",
+    fontWeight: 600,
+    zIndex: 100,
+    pointerEvents: "none" as const,
+  },
+  attachmentRow: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: "0.5rem",
+    marginBottom: "0.4rem",
+  },
+  attachmentThumb: {
+    width: "80px",
+    height: "80px",
+    objectFit: "cover" as const,
+    borderRadius: "6px",
+    border: "1px solid #e5e5e5",
+  },
+  attachmentFileCard: {
+    width: "80px",
+    height: "80px",
+    borderRadius: "6px",
+    border: "1px solid #e5e5e5",
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "0.25rem",
+    background: "#f5f5f5",
+    padding: "0.4rem",
+    overflow: "hidden",
+  },
+  attachmentFileExt: {
+    fontSize: "0.7rem",
+    fontWeight: 700,
+    color: "#555",
+    letterSpacing: "0.05em",
+  },
+  attachmentFileName: {
+    fontSize: "0.65rem",
+    color: "#888",
+    textAlign: "center" as const,
+    wordBreak: "break-all" as const,
+  },
+  attachmentChips: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: "0.4rem",
+  },
+  chip: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.35rem",
+    background: "#f0f0f0",
+    borderRadius: "20px",
+    padding: "0.2rem 0.5rem 0.2rem 0.3rem",
+    fontSize: "0.8rem",
+    color: "#333",
+    maxWidth: "200px",
+  },
+  chipThumb: {
+    width: "22px",
+    height: "22px",
+    objectFit: "cover" as const,
+    borderRadius: "50%",
+  },
+  chipFileExt: {
+    fontSize: "0.65rem",
+    fontWeight: 700,
+    background: "#ccc",
+    borderRadius: "4px",
+    padding: "1px 4px",
+    color: "#444",
+  },
+  chipName: {
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap" as const,
+    flex: 1,
+  },
+  chipStatus: {
+    fontSize: "0.75rem",
+    color: "#888",
+  },
+  chipDismiss: {
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    fontSize: "0.9rem",
+    color: "#888",
+    padding: 0,
+    lineHeight: 1,
+  },
+  attachBtn: {
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    fontSize: "1.1rem",
+    padding: "0.4rem",
+    borderRadius: "6px",
+    height: "fit-content",
+    alignSelf: "flex-end",
   },
   vaultSummary: {
     marginTop: "0.75rem",
