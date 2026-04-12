@@ -4,3 +4,4 @@ web/node_modules/
 web/build/
 *.env
 .env
+.claude/settings.local.json
