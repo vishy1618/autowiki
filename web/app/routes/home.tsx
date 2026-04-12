@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Route } from "./+types/home";
 
 export function meta({}: Route.MetaArgs) {
@@ -20,6 +22,7 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -37,6 +40,10 @@ export default function Home() {
   }, [navigate]);
 
   useEffect(() => {
+    if (ready) inputRef.current?.focus();
+  }, [ready]);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
@@ -47,6 +54,7 @@ export default function Home() {
     setInput("");
     setError(null);
     setSending(true);
+    inputRef.current?.focus();
 
     setMessages((prev) => [
       ...prev,
@@ -169,10 +177,16 @@ export default function Home() {
             <span style={styles.roleLabel}>
               {msg.role === "user" ? "You" : "Assistant"}
             </span>
-            <p style={styles.bubbleText}>
-              {msg.content}
-              {msg.streaming && <span style={styles.cursor}>▌</span>}
-            </p>
+            {msg.role === "assistant" ? (
+              <div style={styles.bubbleText}>
+                <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
+                {msg.streaming && <span style={styles.cursor}>▌</span>}
+              </div>
+            ) : (
+              <p style={styles.bubbleText}>
+                {msg.content}
+              </p>
+            )}
           </div>
         ))}
         {error && <p style={styles.errorText}>Error: {error}</p>}
@@ -182,13 +196,13 @@ export default function Home() {
       {/* Input bar */}
       <div style={styles.inputBar}>
         <textarea
+          ref={inputRef}
           style={styles.textarea}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Message autowiki… (Enter to send, Shift+Enter for newline)"
           rows={3}
-          disabled={sending}
         />
         <button
           onClick={sendMessage}
@@ -303,6 +317,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: "inherit",
     lineHeight: 1.5,
     outline: "none",
+    color: "#111",
+    background: "#fff",
   },
   sendBtn: {
     padding: "0.6rem 1.2rem",

@@ -104,6 +104,45 @@ describe("Home — chat UI", () => {
     });
   });
 
+  it("renders assistant reply as markdown", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        sseStream(
+          "event: delta\ndata: {\"text\":\"**bold** and `code`\"}\n\n",
+          "event: done\ndata: {\"session_id\":\"s1\"}\n\n"
+        ),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    const user = userEvent.setup();
+    renderHome();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    await user.type(screen.getByPlaceholderText(/message autowiki/i), "hi");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    // Should render a <strong> for **bold**, not the literal asterisks.
+    await waitFor(() =>
+      expect(screen.getByRole("strong") ?? document.querySelector("strong")).toBeTruthy()
+    );
+    await waitFor(() =>
+      expect(document.querySelector("strong")?.textContent).toBe("bold")
+    );
+    // Should render a <code> for backtick code.
+    await waitFor(() =>
+      expect(document.querySelector("code")?.textContent).toBe("code")
+    );
+  });
+
   it("streams delta text into the assistant bubble", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
@@ -136,7 +175,7 @@ describe("Home — chat UI", () => {
     );
   });
 
-  it("re-enables the textarea after stream completes", async () => {
+  it("re-enables the send button after stream completes", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     fetchSpy.mockResolvedValueOnce(
@@ -153,12 +192,16 @@ describe("Home — chat UI", () => {
     renderHome();
 
     const textarea = await screen.findByPlaceholderText(/message autowiki/i);
+    // Textarea is never disabled, so the user can always type.
+    expect(textarea).not.toBeDisabled();
+
     await user.type(textarea, "ping");
     await user.click(screen.getByRole("button", { name: /send/i }));
 
-    // Textarea is disabled only while sending; it should re-enable after the stream closes.
+    // Send button re-enables once input is non-empty and stream has finished.
+    await user.type(textarea, "next");
     await waitFor(() =>
-      expect(screen.getByPlaceholderText(/message autowiki/i)).not.toBeDisabled()
+      expect(screen.getByRole("button", { name: /send/i })).not.toBeDisabled()
     );
   });
 
