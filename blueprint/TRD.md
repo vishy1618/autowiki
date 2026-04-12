@@ -1,0 +1,291 @@
+# autowiki — Technical Requirements Document
+
+## 1. Architecture Overview
+
+```
+Browser (Remix SPA)
+      ↕  HTTP + SSE
+  Go HTTP Server
+      ├── /api/*          → API handlers
+      └── /*              → public/index.html (SPA fallback)
+           ↕
+     Claude Sonnet (Anthropic API)
+           ↕
+     Obsidian Vault (markdown files on disk)
+     RocksDB (chat history)
+```
+
+The Go server is the single process. It serves the frontend, handles all API calls, manages vault reads/writes, and runs the dream state goroutine.
+
+---
+
+## 2. Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Backend | Go |
+| Frontend | React Router (Remix) |
+| LLM | Claude Sonnet (`claude-sonnet-4-6`) via Anthropic API |
+| Auth | Google OAuth 2.0 (`golang.org/x/oauth2`) |
+| Sessions | Signed HTTP-only cookies (session token → RocksDB) |
+| Chat history | RocksDB (`grocksdb` Go bindings) |
+| Wiki storage | Markdown files (Obsidian vault on local disk) |
+| Streaming | Server-Sent Events (SSE) |
+| Build | Makefile |
+
+---
+
+## 3. Project Structure
+
+```
+autowiki/
+├── cmd/server/main.go
+├── internal/
+│   ├── server/        # HTTP routing, static file serving, SPA fallback
+│   ├── auth/          # Google OAuth flow, session validation, email whitelist
+│   ├── chat/          # SSE streaming, session management, intent detection
+│   ├── vault/         # Read/write markdown, wikilinks, attachments, index/log
+│   ├── llm/           # Claude API client, prompt templates
+│   ├── store/         # RocksDB — chat sessions, message history, auth sessions
+│   └── dream/         # Background goroutine, nighttime IST scheduler
+├── web/               # Remix app source
+│   └── app/
+├── public/            # Built Remix output — served by Go
+├── blueprint/         # PRD, TRD
+├── config.yaml
+└── Makefile
+
+# The Obsidian vault lives outside the repo at the path set in config.yaml.
+# internal/vault is Go code (the vault I/O package), not vault data.
+
+---
+
+## 4. System Components
+
+### 4.1 Go HTTP Server (`internal/server`)
+
+- Serves the built Remix SPA from `public/` for all non-`/api` routes. SPA fallback: always return `public/index.html` for unmatched routes.
+- Routes all `/api/*` requests to the appropriate handler.
+- In development mode, proxies non-`/api` traffic to the Remix dev server instead of serving from `public/`.
+- Single binary, single instance.
+
+### 4.2 Auth (`internal/auth`)
+
+- Implements Google OAuth 2.0 using `golang.org/x/oauth2`.
+- On successful Google sign-in, the returned email is checked against `allowed_email` in `config.yaml`. Any mismatch returns a 403 and does not create a session.
+- On success, a signed HTTP-only session cookie is issued. The session token is stored in RocksDB with an expiry.
+- An auth middleware wraps all `/api/*` routes (except the OAuth endpoints themselves). Unauthenticated requests to `/api/*` return 401. Unauthenticated requests to any other route are redirected to the sign-in page.
+- The Remix frontend has a single `/login` route that renders the "Sign in with Google" button. All other routes require a valid session.
+
+### 4.3 Chat & SSE Handler (`internal/chat`)
+
+- Accepts `POST /api/chat` as `multipart/form-data` (text message + optional file attachments).
+- Resolves or creates the active session before processing (see session logic in §5).
+- Passes message and attachments to the LLM client.
+- Streams the LLM response back to the client via Server-Sent Events.
+- After streaming completes, triggers vault write evaluation asynchronously.
+
+### 4.4 LLM Client (`internal/llm`)
+
+Wraps the Anthropic Claude Sonnet API. Exposes three prompt pipelines:
+
+- **Ingest**: Given a user message + attachments + current `index.md` + relevant page contents → determine what vault writes are needed and produce updated page content.
+- **Query**: Given a question + relevant page contents → produce a synthesized answer with `[[citations]]`.
+- **Dream**: Given a full vault snapshot → identify and produce reorganization edits.
+
+All pipelines receive `schema.md` as part of the system prompt to enforce wiki conventions.
+
+### 4.5 Vault Manager (`internal/vault`)
+
+- Reads and writes `.md` files to the configured Obsidian vault path.
+- Parses and resolves `[[wikilinks]]`.
+- Manages special files: `index.md` (MOC), `log.md` (append-only activity log).
+- Stores raw uploaded files in `_attachments/` and returns their vault-relative path.
+- Determines relevant pages for a given query by scanning `index.md` and matching headings/links.
+
+### 4.6 Chat History Store (`internal/store`)
+
+- Uses RocksDB as the storage engine via `grocksdb` Go bindings.
+- Key schema:
+
+  ```
+  sessions:list                → ordered list of session IDs (newest first)
+  sessions:{id}:meta           → JSON: { id, created_at, last_active_at, title }
+  sessions:{id}:messages       → ordered list of message IDs
+  messages:{id}                → JSON: { id, session_id, role, content, attachments[], created_at }
+  ```
+
+- Session title is auto-generated by the LLM from the first message of the session.
+
+### 4.7 Dream State (`internal/dream`)
+
+- A goroutine launched at server boot.
+- Sleeps until the next 1:00 AM IST (UTC+5:30) window. Runs until 5:00 AM IST.
+- Runs at most once per calendar night (tracks last run date in RocksDB).
+- During the window, submits the full vault to the LLM for curation:
+  - Identify orphan pages (no inbound links).
+  - Identify broken `[[wikilinks]]`.
+  - Identify pages that should be merged or split.
+  - Improve cross-references and add missing links.
+  - Reorganize folder structure if inconsistent.
+  - Refresh `index.md` to reflect current vault state.
+- Appends a `## Dream – {date}` entry to `log.md` summarizing all changes made.
+
+### 4.8 Remix Frontend (`web/`)
+
+- Built with React Router (Remix) as a single-page application.
+- Built output is placed in `public/` and served statically by the Go server.
+- Features:
+  - Streaming chat interface (consumes SSE from `/api/chat`).
+  - File and image attachment support (drag-and-drop or file picker).
+  - Infinite scroll chat history — presents all messages as a single unbroken timeline. Older messages are fetched a session at a time as the user scrolls up; session boundaries are invisible to the user.
+  - Vault change summary rendered inline after responses that triggered writes.
+
+---
+
+## 5. Session Management
+
+Session boundary is determined by inactivity:
+
+- On each incoming message, read `last_active_at` of the current session from RocksDB.
+- If `last_active_at` is more than **30 minutes** ago (or no session exists), create a new session.
+- Otherwise, append the message to the current session and update `last_active_at`.
+
+---
+
+## 6. Attachment Handling
+
+1. File received via `/api/chat` multipart upload.
+2. File copied as-is to `vault/_attachments/{timestamp}-{original-filename}`.
+3. Claude extracts a text description/summary (vision for images, text extraction for PDFs).
+4. Description used as content for wiki ingest. Page references the file via Obsidian embed syntax: `![[_attachments/...]]`.
+5. Raw file is never discarded.
+
+---
+
+## 7. API Specification
+
+### `GET /api/auth/login`
+
+Redirects the browser to Google's OAuth consent screen.
+
+---
+
+### `GET /api/auth/callback`
+
+Google redirects here after consent. The server:
+1. Exchanges the code for a token.
+2. Fetches the user's email from Google.
+3. Checks the email against `allowed_email` in config — rejects with 403 if it does not match.
+4. Creates a signed session token, stores it in RocksDB with expiry, and sets it as an HTTP-only cookie.
+5. Redirects to `/`.
+
+---
+
+### `POST /api/auth/logout`
+
+Deletes the session token from RocksDB and clears the cookie.
+
+---
+
+### `POST /api/chat`
+
+Streaming chat endpoint.
+
+**Request** (`multipart/form-data`):
+```
+message      string    User's text message
+session_id   string?   If omitted, server resolves or creates session
+files[]      file?     Optional attachments (images, PDFs, documents)
+```
+
+**Response**: `text/event-stream` (SSE)
+
+```
+event: delta    data: { "text": "..." }                      # streaming text chunk
+event: vault    data: { "changes": [{ "type": "created|updated", "path": "..." }] }
+event: done     data: { "session_id": "..." }                # stream complete
+event: error    data: { "message": "..." }
+```
+
+---
+
+### `GET /api/sessions`
+
+Returns the list of session IDs and metadata, newest first. Used by the frontend as a pagination index for infinite scroll — not exposed as a concept in the UI.
+
+**Response**:
+```json
+{
+  "sessions": [
+    { "id": "...", "created_at": "...", "last_active_at": "..." }
+  ]
+}
+```
+
+---
+
+### `GET /api/sessions/:id`
+
+Returns the full message history for a single session. The frontend fetches sessions one at a time as the user scrolls up, prepending each batch to the visible timeline.
+
+**Response**:
+```json
+{
+  "messages": [
+    { "id": "...", "role": "user|assistant", "content": "...", "attachments": [], "created_at": "..." }
+  ]
+}
+```
+
+---
+
+### `GET /api/dream/status`
+
+Returns dream state metadata.
+
+**Response**:
+```json
+{
+  "last_run_at": "...",
+  "next_run_at": "...",
+  "last_run_summary": "..."
+}
+```
+
+---
+
+## 8. Build & Development Workflow
+
+### Production Build
+
+```makefile
+build:
+    cd web && npm run build
+    cp -r web/build/client/* public/
+    go build -o bin/autowiki ./cmd/server
+```
+
+### Development
+
+Two processes run in parallel:
+- `cd web && npm run dev` — Remix dev server with HMR
+- `go run ./cmd/server --dev` — Go server; in `--dev` mode, proxies non-`/api` requests to the Remix dev server
+
+### Configuration (`config.yaml`)
+
+```yaml
+vault_path: ~/path/to/your/obsidian/vault   # must be outside the repo; points to the live Obsidian vault on disk
+server_port: 8080
+anthropic_api_key: ${ANTHROPIC_API_KEY}
+rocksdb_path: ~/.autowiki/db
+auth:
+  google_client_id: ${GOOGLE_CLIENT_ID}
+  google_client_secret: ${GOOGLE_CLIENT_SECRET}
+  allowed_email: you@gmail.com
+  session_secret: ${SESSION_SECRET}          # used to sign session cookies
+dream:
+  enabled: true
+  start_hour_ist: 1    # 1:00 AM IST
+  end_hour_ist: 5      # 5:00 AM IST
+```
