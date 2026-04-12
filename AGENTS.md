@@ -90,4 +90,5 @@ Fix session cookie expiry not persisting across restarts
 - **US-01 — Sign in with Google**: Complete. Pebble session store, Google OAuth flow, session cookie, `/api/auth/me` probe, `/login` page, client-side auth guard.
 - **US-02 — Sign out**: Complete. `POST /api/auth/logout` deletes session and clears cookie; sign-out button in home route.
 - **US-03 — Basic streaming chat**: Complete. ChatStore (MemChatStore + PebbleChatStore sharing a single Pebble DB), LLM client streaming from Anthropic API, `POST /api/chat` SSE handler, chat UI with streaming bubbles.
-- **US-04 through US-12**: Not started. Work through stories in order; each file in `blueprint/user-stories/` has an implementation checklist.
+- **US-04 — Store text knowledge in vault**: Complete. `vault.Manager` (ReadFile/WriteFile/AppendLog/ReadIndex), `save_to_vault` tool added to LLM requests with `tool_choice: auto`, chat handler parses `input_json_delta` SSE events and performs vault writes, frontend shows collapsible "Saved to vault" summary on `vault` SSE event.
+- **US-05 through US-12**: Not started. Work through stories in order; each file in `blueprint/user-stories/` has an implementation checklist.
