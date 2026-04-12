@@ -1,10 +1,12 @@
 package vault_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suvish/autowiki/internal/vault"
 )
@@ -148,5 +150,108 @@ func TestManager_ReadIndex_ReturnsIndexMdContents(t *testing.T) {
 	}
 	if got != "# Index" {
 		t.Fatalf("want %q, got %q", "# Index", got)
+	}
+}
+
+// SaveAttachment
+
+func TestManager_SaveAttachment_WritesFileUnderAttachmentsDir(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+
+	path, err := m.SaveAttachment("photo.png", []byte("imgdata"))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(path, "_attachments/") {
+		t.Fatalf("expected path under _attachments/, got %q", path)
+	}
+	if !strings.HasSuffix(path, ".png") {
+		t.Fatalf("expected .png extension, got %q", path)
+	}
+	full := filepath.Join(dir, path)
+	data, err := os.ReadFile(full)
+	if err != nil {
+		t.Fatalf("file not found at %q: %v", full, err)
+	}
+	if string(data) != "imgdata" {
+		t.Fatalf("want %q, got %q", "imgdata", string(data))
+	}
+}
+
+func TestManager_SaveAttachment_GeneratesUniqueNamesForSameOriginal(t *testing.T) {
+	m := newManager(t)
+
+	path1, _ := m.SaveAttachment("note.png", []byte("a"))
+	path2, _ := m.SaveAttachment("note.png", []byte("b"))
+
+	if path1 == path2 {
+		t.Fatalf("expected unique paths, both got %q", path1)
+	}
+}
+
+func TestManager_SaveAttachment_PreservesOriginalStemInFilename(t *testing.T) {
+	m := newManager(t)
+
+	path, _ := m.SaveAttachment("my-diagram.png", []byte("x"))
+
+	base := filepath.Base(path)
+	if !strings.HasPrefix(base, "my-diagram-") {
+		t.Fatalf("expected filename to start with original stem, got %q", base)
+	}
+}
+
+// AttachmentMeta sidecar
+
+func TestManager_WriteAndReadAttachmentMeta_RoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	path, _ := m.SaveAttachment("img.png", []byte("x"))
+
+	meta := vault.AttachmentMeta{
+		ID:           "abc123",
+		OriginalName: "img.png",
+		MediaType:    "image/png",
+		Description:  "a red circle",
+		UploadedAt:   time.Date(2026, 4, 13, 10, 0, 0, 0, time.UTC),
+	}
+
+	if err := m.WriteAttachmentMeta(path, meta); err != nil {
+		t.Fatalf("WriteAttachmentMeta: %v", err)
+	}
+
+	got, err := m.ReadAttachmentMeta(path)
+	if err != nil {
+		t.Fatalf("ReadAttachmentMeta: %v", err)
+	}
+	if got.ID != meta.ID {
+		t.Errorf("ID: want %q, got %q", meta.ID, got.ID)
+	}
+	if got.Description != meta.Description {
+		t.Errorf("Description: want %q, got %q", meta.Description, got.Description)
+	}
+	if got.OriginalName != meta.OriginalName {
+		t.Errorf("OriginalName: want %q, got %q", meta.OriginalName, got.OriginalName)
+	}
+}
+
+func TestManager_ReadAttachmentMeta_SidecarStoredNextToFile(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	path, _ := m.SaveAttachment("img.png", []byte("x"))
+
+	meta := vault.AttachmentMeta{ID: "x1", OriginalName: "img.png", MediaType: "image/png"}
+	_ = m.WriteAttachmentMeta(path, meta)
+
+	// Sidecar must be readable as JSON directly from disk.
+	sidecarPath := filepath.Join(dir, path+".meta.json")
+	data, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		t.Fatalf("sidecar file not found at %q: %v", sidecarPath, err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("sidecar is not valid JSON: %v", err)
 	}
 }
