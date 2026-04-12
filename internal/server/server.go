@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/suvish/autowiki/internal/attachment"
 	"github.com/suvish/autowiki/internal/auth"
 	"github.com/suvish/autowiki/internal/chat"
 	"github.com/suvish/autowiki/internal/config"
@@ -24,17 +25,19 @@ type Server struct {
 	chats    store.ChatStore
 	streamer chat.Streamer
 	vault    *vault.Manager
+	describer attachment.Describer
 }
 
-func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, streamer chat.Streamer, vm *vault.Manager, dev bool) *Server {
+func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, streamer chat.Streamer, vm *vault.Manager, describer attachment.Describer, dev bool) *Server {
 	s := &Server{
-		cfg:      cfg,
-		mux:      http.NewServeMux(),
-		dev:      dev,
-		sessions: sessions,
-		chats:    chats,
-		streamer: streamer,
-		vault:    vm,
+		cfg:       cfg,
+		mux:       http.NewServeMux(),
+		dev:       dev,
+		sessions:  sessions,
+		chats:     chats,
+		streamer:  streamer,
+		vault:     vm,
+		describer: describer,
 	}
 	s.routes()
 	return s
@@ -60,6 +63,7 @@ func (s *Server) routes() {
 	// Protected API routes.
 	s.mux.Handle("/api/health", mw.Require(http.HandlerFunc(s.handleHealth)))
 	s.mux.Handle("/api/chat", mw.Require(chat.NewHandler(s.chats, s.streamer, s.vault)))
+	s.mux.Handle("/api/attachments", mw.Require(attachment.NewHandler(s.vault, s.describer)))
 
 	// All non-API routes serve the SPA unconditionally. Auth is enforced
 	// client-side; the server only protects /api/* data endpoints.

@@ -41,7 +41,7 @@ func main() {
 	llmClient := llm.NewClient(llm.Config{APIKey: cfg.AnthropicAPIKey})
 	vm := vault.NewManager(cfg.VaultPath)
 
-	srv := server.New(cfg, sessions, chats, llmClient, vm, *dev)
+	srv := server.New(cfg, sessions, chats, llmClient, vm, llmClient, *dev)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
