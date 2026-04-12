@@ -61,6 +61,23 @@ func (h *Handler) WithHTTPClient(c *http.Client) {
 	h.httpClient = c
 }
 
+// Me returns the authenticated user's email as JSON, or 401 if not logged in.
+// The frontend uses this as a lightweight auth probe on page load.
+func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	sess, err := h.sessions.GetSession(cookie.Value)
+	if err != nil || sess == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"email":"` + sess.Email + `"}`))
+}
+
 // Login redirects the browser to Google's OAuth consent screen.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	state, err := randomToken(16)

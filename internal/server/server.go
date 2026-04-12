@@ -41,14 +41,18 @@ func (s *Server) routes() {
 	// Public OAuth endpoints — no auth required.
 	s.mux.HandleFunc("/api/auth/login", authHandler.Login)
 	s.mux.HandleFunc("/api/auth/callback", authHandler.Callback)
+	s.mux.HandleFunc("/api/auth/me", authHandler.Me)
 
 	// Protected API routes.
 	s.mux.Handle("/api/health", mw.Require(http.HandlerFunc(s.handleHealth)))
 
-	// SPA / static file handler — must be last.
+	// /login is the only unauthenticated SPA route — serves the same shell
+	// without the auth guard to avoid a redirect loop.
 	if s.dev {
+		s.mux.HandleFunc("/login", s.proxyToRemixDev)
 		s.mux.Handle("/", mw.RequireOrRedirect(http.HandlerFunc(s.proxyToRemixDev)))
 	} else {
+		s.mux.HandleFunc("/login", s.handleSPA)
 		s.mux.Handle("/", mw.RequireOrRedirect(http.HandlerFunc(s.handleSPA)))
 	}
 }
