@@ -265,4 +265,71 @@ describe("Home — chat UI", () => {
       expect(chatCalls.length).toBe(1);
     });
   });
+
+  it("shows saved-to-vault summary when vault SSE event received", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        sseStream(
+          "event: delta\ndata: {\"text\":\"Saving that.\"}\n\n",
+          "event: vault\ndata: {\"changes\":[{\"path\":\"notes/go.md\"}]}\n\n",
+          "event: done\ndata: {\"session_id\":\"s1\"}\n\n"
+        ),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    const user = userEvent.setup();
+    renderHome();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    await user.type(screen.getByPlaceholderText(/message autowiki/i), "save this");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/saved to vault/i)).toBeInTheDocument()
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/notes\/go\.md/)).toBeInTheDocument()
+    );
+  });
+
+  it("does not show vault summary when no vault event", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        sseStream(
+          "event: delta\ndata: {\"text\":\"Just chatting.\"}\n\n",
+          "event: done\ndata: {\"session_id\":\"s1\"}\n\n"
+        ),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    const user = userEvent.setup();
+    renderHome();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    await user.type(screen.getByPlaceholderText(/message autowiki/i), "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Just chatting/)).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/saved to vault/i)).not.toBeInTheDocument();
+  });
 });

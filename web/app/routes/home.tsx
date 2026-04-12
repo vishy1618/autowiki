@@ -8,10 +8,15 @@ export function meta({}: Route.MetaArgs) {
   return [{ title: "autowiki" }];
 }
 
+interface VaultChange {
+  path: string;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  vaultChanges?: VaultChange[];
 }
 
 export default function Home() {
@@ -109,6 +114,20 @@ export default function Home() {
               } catch {
                 // ignore malformed delta
               }
+            } else if (currentEvent === "vault") {
+              try {
+                const { changes } = JSON.parse(data) as { changes: VaultChange[] };
+                setMessages((prev) => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last?.role === "assistant") {
+                    next[next.length - 1] = { ...last, vaultChanges: changes };
+                  }
+                  return next;
+                });
+              } catch {
+                // ignore malformed vault event
+              }
             } else if (currentEvent === "error") {
               try {
                 const { message } = JSON.parse(data) as { message: string };
@@ -181,6 +200,16 @@ export default function Home() {
               <div style={styles.bubbleText}>
                 <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
                 {msg.streaming && <span style={styles.cursor}>▌</span>}
+                {!msg.streaming && msg.vaultChanges && msg.vaultChanges.length > 0 && (
+                  <details style={styles.vaultSummary}>
+                    <summary style={styles.vaultSummaryTitle}>Saved to vault</summary>
+                    <ul style={styles.vaultList}>
+                      {msg.vaultChanges.map((c) => (
+                        <li key={c.path} style={styles.vaultListItem}>{c.path}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
               </div>
             ) : (
               <p style={styles.bubbleText}>
@@ -330,5 +359,28 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.95rem",
     fontWeight: 500,
     height: "fit-content",
+  },
+  vaultSummary: {
+    marginTop: "0.75rem",
+    borderTop: "1px solid #e5e5e5",
+    paddingTop: "0.5rem",
+  },
+  vaultSummaryTitle: {
+    fontSize: "0.75rem",
+    fontWeight: 600,
+    color: "#555",
+    cursor: "pointer",
+    userSelect: "none" as const,
+  },
+  vaultList: {
+    margin: "0.25rem 0 0 1rem",
+    padding: 0,
+    listStyle: "disc",
+  },
+  vaultListItem: {
+    fontSize: "0.8rem",
+    color: "#555",
+    fontFamily: "monospace",
+    marginTop: "0.2rem",
   },
 };
