@@ -68,6 +68,23 @@ make dev-server   # Go server in --dev mode (proxies non-/api to port 5173)
 - **Dream state** is a goroutine that wakes between 1–5am IST nightly to reorganise the vault. It runs at most once per night and logs changes to `log.md`.
 - **The Obsidian vault lives outside the repo** at `VAULT_PATH`. `internal/vault` is Go code, not vault data.
 
+## Commit Conventions
+
+- Use present imperative tense: "Add login page" not "Added login page" or "Adds login page"
+- First line is the subject — keep it under 72 characters
+- Add a blank line followed by a brief body when the change needs context beyond what the subject conveys
+- Do not end the subject line with a period
+
+Examples:
+```
+Implement Google OAuth callback handler
+
+Reject non-whitelisted emails with 403 before issuing a session token.
+```
+```
+Fix session cookie expiry not persisting across restarts
+```
+
 ## Current Status
 
 Boilerplate is in place (Go server, Remix scaffold, config, Makefile). No stories are implemented yet. Work through stories in order: US-01 first (Google auth), then US-02, and so on. Each story file in `blueprint/user-stories/` has an implementation checklist.
