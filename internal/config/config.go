@@ -36,8 +36,8 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Default SERVER_PORT to 8080 if not set so the YAML parses as a valid int.
-	if os.Getenv("SERVER_PORT") == "" {
-		os.Setenv("SERVER_PORT", "8080")
+	if os.Getenv("PORT") == "" {
+		os.Setenv("PORT", "8080")
 	}
 
 	expanded := os.ExpandEnv(string(data))

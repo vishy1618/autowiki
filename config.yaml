@@ -1,5 +1,5 @@
 vault_path: ${VAULT_PATH}
-server_port: ${SERVER_PORT}
+server_port: ${PORT}
 anthropic_api_key: ${ANTHROPIC_API_KEY}
 rocksdb_path: ${ROCKSDB_PATH}
 auth:
