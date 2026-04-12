@@ -1,0 +1,6 @@
+bin/
+public/
+web/node_modules/
+web/build/
+*.env
+.env
