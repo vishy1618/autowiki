@@ -27,18 +27,6 @@ func (m *Middleware) Require(next http.Handler) http.Handler {
 	})
 }
 
-// RequireOrRedirect wraps a non-API handler: unauthenticated requests are
-// redirected to /login.
-func (m *Middleware) RequireOrRedirect(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !m.isAuthenticated(r) {
-			http.Redirect(w, r, "/login", http.StatusFound)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func (m *Middleware) isAuthenticated(r *http.Request) bool {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {

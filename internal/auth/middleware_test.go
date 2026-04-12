@@ -74,35 +74,3 @@ func TestMiddleware_API_ValidToken_PassesThrough(t *testing.T) {
 		t.Errorf("status: want %d, got %d", http.StatusOK, w.Code)
 	}
 }
-
-func TestMiddleware_NonAPI_NoCookie_RedirectsToLogin(t *testing.T) {
-	s := store.NewMemStore()
-	mw := auth.NewMiddleware(s)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	w := httptest.NewRecorder()
-
-	mw.RequireOrRedirect(okHandler()).ServeHTTP(w, req)
-
-	if w.Code != http.StatusFound {
-		t.Errorf("status: want %d, got %d", http.StatusFound, w.Code)
-	}
-	if loc := w.Header().Get("Location"); loc != "/login" {
-		t.Errorf("Location: want /login, got %q", loc)
-	}
-}
-
-func TestMiddleware_NonAPI_ValidToken_PassesThrough(t *testing.T) {
-	s, token := storeWithSession(t)
-	mw := auth.NewMiddleware(s)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: "autowiki_session", Value: token})
-	w := httptest.NewRecorder()
-
-	mw.RequireOrRedirect(okHandler()).ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status: want %d, got %d", http.StatusOK, w.Code)
-	}
-}

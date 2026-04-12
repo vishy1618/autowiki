@@ -46,14 +46,12 @@ func (s *Server) routes() {
 	// Protected API routes.
 	s.mux.Handle("/api/health", mw.Require(http.HandlerFunc(s.handleHealth)))
 
-	// /login is the only unauthenticated SPA route — serves the same shell
-	// without the auth guard to avoid a redirect loop.
+	// All non-API routes serve the SPA unconditionally. Auth is enforced
+	// client-side; the server only protects /api/* data endpoints.
 	if s.dev {
-		s.mux.HandleFunc("/login", s.proxyToRemixDev)
-		s.mux.Handle("/", mw.RequireOrRedirect(http.HandlerFunc(s.proxyToRemixDev)))
+		s.mux.HandleFunc("/", s.proxyToRemixDev)
 	} else {
-		s.mux.HandleFunc("/login", s.handleSPA)
-		s.mux.Handle("/", mw.RequireOrRedirect(http.HandlerFunc(s.handleSPA)))
+		s.mux.HandleFunc("/", s.handleSPA)
 	}
 }
 
