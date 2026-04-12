@@ -37,15 +37,16 @@ Each story follows the INVEST principle: Independent, Negotiable, Valuable, Esti
 |---|---|---|
 | [US-01](./user-stories/US-01.md) | Sign in with Google | Authentication |
 | [US-02](./user-stories/US-02.md) | Sign out | Authentication |
-| [US-03](./user-stories/US-03.md) | Share text knowledge | Knowledge Capture |
-| [US-04](./user-stories/US-04.md) | Share an image | Knowledge Capture |
-| [US-05](./user-stories/US-05.md) | Share a document | Knowledge Capture |
-| [US-06](./user-stories/US-06.md) | Ask a question | Knowledge Retrieval |
-| [US-07](./user-stories/US-07.md) | Browse vault in Obsidian | Knowledge Retrieval |
-| [US-08](./user-stories/US-08.md) | Scroll back through chat history | Chat History |
-| [US-09](./user-stories/US-09.md) | See what was stored | Vault Maintenance |
-| [US-10](./user-stories/US-10.md) | Overnight wiki consolidation | Vault Maintenance |
-| [US-11](./user-stories/US-11.md) | Check dream state history | Vault Maintenance |
+| [US-03](./user-stories/US-03.md) | Basic streaming chat | Chat |
+| [US-04](./user-stories/US-04.md) | Store text knowledge in vault | Knowledge Capture |
+| [US-05](./user-stories/US-05.md) | Share an image | Knowledge Capture |
+| [US-06](./user-stories/US-06.md) | Share a document | Knowledge Capture |
+| [US-07](./user-stories/US-07.md) | Ask a question | Knowledge Retrieval |
+| [US-08](./user-stories/US-08.md) | Browse vault in Obsidian | Knowledge Retrieval |
+| [US-09](./user-stories/US-09.md) | Scroll back through chat history | Chat History |
+| [US-10](./user-stories/US-10.md) | See what was stored | Vault Maintenance |
+| [US-11](./user-stories/US-11.md) | Overnight wiki consolidation | Vault Maintenance |
+| [US-12](./user-stories/US-12.md) | Check dream state history | Vault Maintenance |
 
 ---
 
