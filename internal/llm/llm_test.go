@@ -78,7 +78,7 @@ func TestClient_Stream_YieldsTokenDeltas(t *testing.T) {
 	}
 
 	// Act
-	body, err := client.Stream(t.Context(), messages)
+	body, err := client.Stream(t.Context(), messages, "")
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -127,10 +127,85 @@ func TestClient_Stream_ReturnsErrorOnNon200(t *testing.T) {
 	})
 
 	// Act
-	_, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}})
+	_, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "")
 
 	// Assert
 	if err == nil {
 		t.Fatal("expected error on 401 response, got nil")
 	}
+}
+
+func TestClient_Stream_IncludesSaveToVaultTool(t *testing.T) {
+	// Arrange
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+			ToolChoice struct {
+				Type string `json:"type"`
+			} `json:"tool_choice"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+
+		found := false
+		for _, tool := range body.Tools {
+			if tool.Name == "save_to_vault" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected save_to_vault tool in request")
+		}
+		if body.ToolChoice.Type != "auto" {
+			t.Errorf("expected tool_choice auto, got %q", body.ToolChoice.Type)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
+func TestClient_Stream_IncludesIndexMDInSystemPrompt(t *testing.T) {
+	// Arrange
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System string `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if !strings.Contains(body.System, "## Vault Index") {
+			t.Errorf("expected system prompt to contain vault index section, got: %q", body.System)
+		}
+		if !strings.Contains(body.System, "existing content") {
+			t.Errorf("expected system prompt to contain indexMD content, got: %q", body.System)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "existing content")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
 }

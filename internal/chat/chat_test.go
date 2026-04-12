@@ -20,7 +20,7 @@ type stubStreamer struct {
 	err  error
 }
 
-func (s *stubStreamer) Stream(_ context.Context, _ []store.Message) (io.ReadCloser, error) {
+func (s *stubStreamer) Stream(_ context.Context, _ []store.Message, _ string) (io.ReadCloser, error) {
 	if s.err != nil {
 		return nil, s.err
 	}

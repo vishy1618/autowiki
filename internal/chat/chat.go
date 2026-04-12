@@ -15,7 +15,7 @@ import (
 // Streamer is the subset of llm.Client used by the chat handler.
 // Defined here so the handler can be tested with a stub.
 type Streamer interface {
-	Stream(ctx context.Context, messages []store.Message) (io.ReadCloser, error)
+	Stream(ctx context.Context, messages []store.Message, indexMD string) (io.ReadCloser, error)
 }
 
 // Handler handles chat API requests.
@@ -70,7 +70,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Open the SSE stream from the LLM.
-	body, err := h.streamer.Stream(r.Context(), history)
+	body, err := h.streamer.Stream(r.Context(), history, "")
 	if err != nil {
 		http.Error(w, "llm error", http.StatusInternalServerError)
 		return

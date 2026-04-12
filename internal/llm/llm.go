@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	defaultBaseURL        = "https://api.anthropic.com"
-	defaultModel          = "claude-sonnet-4-6"
-	anthropicVersion      = "2023-06-01"
-	messagesPath          = "/v1/messages"
+	defaultBaseURL   = "https://api.anthropic.com"
+	defaultModel     = "claude-sonnet-4-6"
+	anthropicVersion = "2023-06-01"
+	messagesPath     = "/v1/messages"
 )
 
 // Config holds configuration for the LLM client.
@@ -48,39 +48,77 @@ type requestMessage struct {
 	Content string `json:"content"`
 }
 
-// systemPrompt is sent with every request so the assistant knows its identity
-// and purpose.
-const systemPrompt = `You are autowiki, a personal knowledge assistant. Your job is to help the user think, learn, and capture knowledge through natural conversation.
+// systemPromptBase is the fixed part of the system prompt sent with every
+// request. It establishes autowiki's identity and purpose.
+const systemPromptBase = `You are autowiki, a personal knowledge assistant. Your job is to help the user think, learn, and capture knowledge through natural conversation.
 
 You are not a generic assistant — you are a dedicated thinking partner for one person. You know that behind the scenes, the knowledge you help surface is being curated into a personal Obsidian wiki that the user owns and can browse at any time.
 
 Be direct, thoughtful, and concise. Prefer clarity over verbosity. When the user shares something they've learned, engage with it genuinely. When they ask a question, answer it well.
 
+When the user shares information that is worth preserving — something they've learned, a decision they've made, a concept they want to remember — call the save_to_vault tool with the relevant pages. Use your judgment: greetings, simple questions, and conversational replies do not need vault writes.
+
 Do not mention Claude, Anthropic, or any underlying model. You are autowiki.`
+
+// toolDefinition is the save_to_vault tool schema sent in every request.
+var toolDefinition = map[string]any{
+	"name":        "save_to_vault",
+	"description": "Save knowledge to the user's personal vault. Call this when the conversation contains information worth preserving. Each page should be a focused topic; use nested paths (e.g. 'programming/go.md') to organise by subject.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"pages": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path":    map[string]any{"type": "string", "description": "Vault-relative path, e.g. 'programming/go.md'"},
+						"content": map[string]any{"type": "string", "description": "Full markdown content for the page"},
+					},
+					"required": []string{"path", "content"},
+				},
+			},
+		},
+		"required": []string{"pages"},
+	},
+}
 
 // streamRequest is the body sent to POST /v1/messages.
 type streamRequest struct {
-	Model     string           `json:"model"`
-	MaxTokens int              `json:"max_tokens"`
-	Stream    bool             `json:"stream"`
-	System    string           `json:"system"`
-	Messages  []requestMessage `json:"messages"`
+	Model      string           `json:"model"`
+	MaxTokens  int              `json:"max_tokens"`
+	Stream     bool             `json:"stream"`
+	System     string           `json:"system"`
+	Messages   []requestMessage `json:"messages"`
+	Tools      []any            `json:"tools"`
+	ToolChoice map[string]any   `json:"tool_choice"`
 }
 
 // Stream opens a streaming request to the Anthropic Messages API and returns
 // the raw SSE response body. The caller must close the returned ReadCloser.
-func (c *Client) Stream(ctx context.Context, messages []store.Message) (io.ReadCloser, error) {
+// indexMD is the current content of index.md in the vault; pass an empty
+// string if the index does not yet exist.
+func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD string) (io.ReadCloser, error) {
 	reqMsgs := make([]requestMessage, 0, len(messages))
 	for _, m := range messages {
 		reqMsgs = append(reqMsgs, requestMessage{Role: m.Role, Content: m.Content})
+	}
+
+	system := systemPromptBase
+	if indexMD != "" {
+		system += "\n\n## Vault Index\n\n" + indexMD
 	}
 
 	body, err := json.Marshal(streamRequest{
 		Model:     c.cfg.Model,
 		MaxTokens: 4096,
 		Stream:    true,
-		System:    systemPrompt,
+		System:    system,
 		Messages:  reqMsgs,
+		Tools:     []any{toolDefinition},
+		ToolChoice: map[string]any{
+			"type": "auto",
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshalling request: %w", err)
