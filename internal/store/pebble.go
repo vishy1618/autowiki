@@ -8,6 +8,18 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
+// OpenPebble opens (or creates) a Pebble database at the given path.
+// The caller owns the returned *pebble.DB and must call Close when done.
+func OpenPebble(path string) (*pebble.DB, error) {
+	db, err := pebble.Open(path, &pebble.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("opening pebble at %s: %w", path, err)
+	}
+	return db, nil
+}
+
+// ── Auth session store ──────────────────────────────────────────────────────
+
 const sessionKeyPrefix = "auth:sessions:"
 
 // PebbleStore is a Pebble-backed SessionStore.
@@ -15,18 +27,9 @@ type PebbleStore struct {
 	db *pebble.DB
 }
 
-// NewPebbleStore opens (or creates) a Pebble database at the given path.
-func NewPebbleStore(path string) (*PebbleStore, error) {
-	db, err := pebble.Open(path, &pebble.Options{})
-	if err != nil {
-		return nil, fmt.Errorf("opening pebble at %s: %w", path, err)
-	}
-	return &PebbleStore{db: db}, nil
-}
-
-// Close releases the underlying Pebble handle. Always call this when done.
-func (p *PebbleStore) Close() error {
-	return p.db.Close()
+// NewPebbleStore returns a SessionStore backed by the given Pebble database.
+func NewPebbleStore(db *pebble.DB) *PebbleStore {
+	return &PebbleStore{db: db}
 }
 
 func (p *PebbleStore) CreateSession(s Session) error {

@@ -28,13 +28,16 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	sessions, err := store.NewPebbleStore(cfg.PebblePath)
+	db, err := store.OpenPebble(cfg.PebblePath)
 	if err != nil {
 		log.Fatalf("failed to open pebble store: %v", err)
 	}
-	defer sessions.Close()
+	defer db.Close()
 
-	srv := server.New(cfg, sessions, *dev)
+	sessions := store.NewPebbleStore(db)
+	chats := store.NewPebbleChatStore(db)
+
+	srv := server.New(cfg, sessions, chats, *dev)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

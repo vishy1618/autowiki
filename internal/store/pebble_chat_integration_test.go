@@ -6,12 +6,12 @@ import (
 	"github.com/suvish/autowiki/internal/store"
 )
 
-func TestPebbleStore(t *testing.T) {
+func TestPebbleChatStore(t *testing.T) {
 	db, err := store.OpenPebble(t.TempDir())
 	if err != nil {
 		t.Fatalf("OpenPebble: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	runSessionStoreTests(t, store.NewPebbleStore(db))
+	runChatStoreTests(t, store.NewPebbleChatStore(db))
 }

@@ -19,10 +19,11 @@ type Server struct {
 	mux      *http.ServeMux
 	dev      bool
 	sessions store.SessionStore
+	chats    store.ChatStore
 }
 
-func New(cfg *config.Config, sessions store.SessionStore, dev bool) *Server {
-	s := &Server{cfg: cfg, mux: http.NewServeMux(), dev: dev, sessions: sessions}
+func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, dev bool) *Server {
+	s := &Server{cfg: cfg, mux: http.NewServeMux(), dev: dev, sessions: sessions, chats: chats}
 	s.routes()
 	return s
 }
