@@ -35,6 +35,11 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config: %w", err)
 	}
 
+	// Default SERVER_PORT to 8080 if not set so the YAML parses as a valid int.
+	if os.Getenv("SERVER_PORT") == "" {
+		os.Setenv("SERVER_PORT", "8080")
+	}
+
 	expanded := os.ExpandEnv(string(data))
 
 	var cfg Config
@@ -51,22 +56,25 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) validate() error {
 	if c.VaultPath == "" {
-		return fmt.Errorf("vault_path is required")
+		return fmt.Errorf("VAULT_PATH is required")
+	}
+	if c.RocksDBPath == "" {
+		return fmt.Errorf("ROCKSDB_PATH is required")
 	}
 	if c.AnthropicAPIKey == "" {
-		return fmt.Errorf("anthropic_api_key is required")
+		return fmt.Errorf("ANTHROPIC_API_KEY is required")
 	}
 	if c.Auth.GoogleClientID == "" {
-		return fmt.Errorf("auth.google_client_id is required")
+		return fmt.Errorf("GOOGLE_CLIENT_ID is required")
 	}
 	if c.Auth.GoogleClientSecret == "" {
-		return fmt.Errorf("auth.google_client_secret is required")
+		return fmt.Errorf("GOOGLE_CLIENT_SECRET is required")
 	}
 	if c.Auth.AllowedEmail == "" {
-		return fmt.Errorf("auth.allowed_email is required")
+		return fmt.Errorf("ALLOWED_EMAIL is required")
 	}
 	if c.Auth.SessionSecret == "" {
-		return fmt.Errorf("auth.session_secret is required")
+		return fmt.Errorf("SESSION_SECRET is required")
 	}
 	return nil
 }
