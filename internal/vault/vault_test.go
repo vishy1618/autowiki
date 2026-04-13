@@ -324,6 +324,64 @@ func TestManager_SearchPages_ReturnsEmptyWhenNoMatch(t *testing.T) {
 	}
 }
 
+// EnsureSchema
+
+func TestManager_EnsureSchema_CreatesFileWhenAbsent(t *testing.T) {
+	m := newManager(t)
+
+	content, err := m.EnsureSchema()
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content == "" {
+		t.Fatal("expected non-empty schema content")
+	}
+}
+
+func TestManager_EnsureSchema_WritesFileToDisk(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+
+	_, _ = m.EnsureSchema()
+
+	data, err := os.ReadFile(filepath.Join(dir, "schema.md"))
+	if err != nil {
+		t.Fatalf("schema.md not created on disk: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("schema.md is empty")
+	}
+}
+
+func TestManager_EnsureSchema_ReturnsExistingContentUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	custom := "# My Custom Schema\n\nmy rules here\n"
+	writeFixture(t, dir, "schema.md", custom)
+
+	content, err := m.EnsureSchema()
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if content != custom {
+		t.Fatalf("want existing content %q, got %q", custom, content)
+	}
+}
+
+func TestManager_EnsureSchema_DefaultTemplateContainsExpectedSections(t *testing.T) {
+	m := newManager(t)
+
+	content, _ := m.EnsureSchema()
+
+	for _, section := range []string{"## Folders", "## Files", "## Links", "## Headings", "## Style"} {
+		if !strings.Contains(content, section) {
+			t.Errorf("default schema missing section %q", section)
+		}
+	}
+}
+
 func TestManager_ReadAttachmentMeta_SidecarStoredNextToFile(t *testing.T) {
 	dir := t.TempDir()
 	m := vault.NewManager(dir)

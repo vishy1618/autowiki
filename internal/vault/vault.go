@@ -234,3 +234,39 @@ func (m *Manager) ReadFile(path string) (string, error) {
 	}
 	return string(data), nil
 }
+
+// defaultSchema is the template written to schema.md when it does not exist.
+const defaultSchema = `# Wiki Schema
+
+## Folders
+Lowercase, topic-based. Nest only when a topic grows large.
+Examples: ` + "`programming/go.md`" + `, ` + "`science/biology/cell-theory.md`" + `
+
+## Files
+Lowercase hyphenated noun phrases. Example: ` + "`go-interfaces.md`" + `
+
+## Links
+Use [[wikilinks]] to connect related pages. Link on first meaningful mention.
+
+## Headings
+H1 for page title, H2 for major sections, H3 for subsections.
+
+## Style
+Concise present-tense prose. Bullet lists for enumerations and steps, not explanations.
+`
+
+// EnsureSchema returns the content of schema.md, creating it from the default
+// template if it does not already exist.
+func (m *Manager) EnsureSchema() (string, error) {
+	content, err := m.ReadFile("schema.md")
+	if err != nil {
+		return "", err
+	}
+	if content != "" {
+		return content, nil
+	}
+	if err := m.WriteFile("schema.md", defaultSchema); err != nil {
+		return "", err
+	}
+	return defaultSchema, nil
+}
