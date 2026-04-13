@@ -44,6 +44,22 @@ data: {"type":"message_stop"}
 
 `
 
+// toolUseNoTextAnthropicSSE is a streaming response where the model calls the
+// save_to_vault tool directly with no text preamble.
+const toolUseNoTextAnthropicSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_silent","name":"save_to_vault","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"pages\":[{\"path\":\"notes/silent.md\",\"content\":\"# Silent\"}]}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
 // toolUseAnthropicSSE is a streaming response where the model emits a text
 // reply AND calls the save_to_vault tool.
 const toolUseAnthropicSSE = `event: content_block_start
@@ -281,6 +297,54 @@ func TestHandler_PostChat_InjectsAttachmentDescriptionIntoContext(t *testing.T) 
 	}
 	if !strings.Contains(userContent, attachPath) {
 		t.Errorf("expected vault path %q in LLM context; user message: %q", attachPath, userContent)
+	}
+}
+
+func TestHandler_PostChat_NoEmptyTextBlockWhenLLMCallsToolWithoutText(t *testing.T) {
+	// When the LLM calls save_to_vault with no text preamble, the stored
+	// assistant content must NOT contain an empty text block — Anthropic
+	// rejects messages with empty text blocks on subsequent turns (400).
+	cs := store.NewMemChatStore()
+	vm := vault.NewManager(t.TempDir())
+	h := chat.NewHandler(cs, &stubStreamer{body: toolUseNoTextAnthropicSSE}, vm)
+
+	form := url.Values{"message": {"save quietly"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	session, _ := cs.ResolveSession()
+	msgs, _ := cs.ListMessages(session.ID)
+
+	// Find the assistant message.
+	var assistantContent string
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			assistantContent = m.Content
+		}
+	}
+
+	// If content is a JSON array, none of the blocks should be an empty text block.
+	if len(assistantContent) > 0 && assistantContent[0] == '[' {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(assistantContent), &blocks); err != nil {
+			t.Fatalf("parsing assistant content: %v", err)
+		}
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text == "" {
+				t.Errorf("stored assistant content contains empty text block: %v", blocks)
+			}
+		}
 	}
 }
 

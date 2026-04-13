@@ -197,11 +197,16 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal([]byte(toolJSONBuf.String()), &toolInput); err != nil {
 			toolInput = json.RawMessage("{}")
 		}
-		blocks, err := json.Marshal([]any{
-			map[string]any{"type": "text", "text": assembled.String()},
-			map[string]any{"type": "tool_use", "id": toolUseID, "name": toolUseName, "input": toolInput},
-		})
-		if err == nil {
+		// Only include a text block when there is actual text — Anthropic
+		// rejects empty text blocks on subsequent turns.
+		var contentBlocks []any
+		if assembled.Len() > 0 {
+			contentBlocks = append(contentBlocks,
+				map[string]any{"type": "text", "text": assembled.String()})
+		}
+		contentBlocks = append(contentBlocks,
+			map[string]any{"type": "tool_use", "id": toolUseID, "name": toolUseName, "input": toolInput})
+		if blocks, err := json.Marshal(contentBlocks); err == nil {
 			assistantContent = string(blocks)
 		}
 	}
