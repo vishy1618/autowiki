@@ -127,7 +127,7 @@ export default function Home() {
 
   async function sendMessage() {
     const text = input.trim();
-    if (!text || sending) return;
+    if (!text || sending || pendingAttachments.some((a) => a.uploading)) return;
 
     const readyAttachments = pendingAttachments.filter((a) => !a.uploading && a.path);
 
@@ -389,7 +389,7 @@ export default function Home() {
           />
           <button
             onClick={sendMessage}
-            disabled={sending || !input.trim()}
+            disabled={sending || !input.trim() || pendingAttachments.some((a) => a.uploading)}
             style={styles.sendBtn}
           >
             {sending ? "…" : "Send"}

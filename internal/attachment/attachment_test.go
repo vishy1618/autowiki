@@ -97,6 +97,47 @@ func TestHandler_Upload_NonImageReturnsEmptyDescription(t *testing.T) {
 	}
 }
 
+func TestHandler_Upload_WritesSidecarMetadata(t *testing.T) {
+	// Arrange — use an explicit vault so we can inspect it afterwards.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	h := attachment.NewHandler(vm, &stubDescriber{desc: "a blue square"})
+
+	body, ct := multipartBody(t, "photo.png", "image/png", []byte("fakeimg"))
+	req := httptest.NewRequest(http.MethodPost, "/api/attachments", body)
+	req.Header.Set("Content-Type", ct)
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+
+	// Assert — sidecar exists and contains correct fields.
+	meta, err := vm.ReadAttachmentMeta(resp.Path)
+	if err != nil {
+		t.Fatalf("expected sidecar to be written at %q: %v", resp.Path, err)
+	}
+	if meta.Description != "a blue square" {
+		t.Errorf("want description %q, got %q", "a blue square", meta.Description)
+	}
+	if meta.OriginalName != "photo.png" {
+		t.Errorf("want original_name %q, got %q", "photo.png", meta.OriginalName)
+	}
+	if meta.MediaType != "image/png" {
+		t.Errorf("want media_type %q, got %q", "image/png", meta.MediaType)
+	}
+}
+
 func TestHandler_Upload_MissingFileReturns400(t *testing.T) {
 	// Arrange — multipart body with no file field
 	h := newTestHandler(t, &stubDescriber{})
