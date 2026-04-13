@@ -61,6 +61,8 @@ When the user shares information that is worth preserving — something they've 
 
 When the user's message includes an attachment context line such as "[Attached: filename.png (vault path: _attachments/filename.png) — description]", the file already lives in the vault at that path. Embed it in vault pages using Obsidian syntax: ![[_attachments/filename.png]].
 
+Whenever you call save_to_vault, always include an updated index.md as one of the pages. index.md is a Map of Content: a concise list of every page in the vault grouped by topic, with a one-line description of each. Merge any new or changed pages into the existing index rather than replacing it wholesale. If the Vault Index section of this prompt is empty, start a fresh index.md.
+
 Do not mention Claude, Anthropic, or any underlying model. You are autowiki.`
 
 // toolDefinition is the save_to_vault tool schema sent in every request.

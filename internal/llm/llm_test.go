@@ -277,6 +277,36 @@ func TestClient_Stream_IncludesIndexMDInSystemPrompt(t *testing.T) {
 	body.Close()
 }
 
+func TestClient_Stream_SystemPromptInstructsLLMToMaintainIndex(t *testing.T) {
+	// Arrange — capture the system prompt the client sends.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System string `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		// The system prompt must tell the LLM to keep index.md current so
+		// that the vault has a live map of content after every ingest.
+		if !strings.Contains(body.System, "index.md") {
+			t.Errorf("expected system prompt to instruct LLM to maintain index.md, got: %q", body.System)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
 func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
 	// Arrange — capture the system prompt the client sends.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
