@@ -343,7 +343,7 @@ export default function Home() {
                 {msg.statusMessage && (
                   <em style={styles.statusLine}>{msg.statusMessage}</em>
                 )}
-                <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
+                <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.content}</Markdown>
                 {msg.streaming && <span style={styles.cursor}>▌</span>}
                 {!msg.streaming && msg.vaultChanges && msg.vaultChanges.length > 0 && (
                   <details style={styles.vaultSummary}>
@@ -426,6 +426,18 @@ export default function Home() {
     </div>
   );
 }
+
+const markdownComponents = {
+  table: (props: React.HTMLAttributes<HTMLTableElement>) => (
+    <table style={styles.mdTable} {...props} />
+  ),
+  th: (props: React.ThHTMLAttributes<HTMLTableCellElement>) => (
+    <th style={styles.mdTh} {...props} />
+  ),
+  td: (props: React.TdHTMLAttributes<HTMLTableCellElement>) => (
+    <td style={styles.mdTd} {...props} />
+  ),
+};
 
 const styles: Record<string, React.CSSProperties> = {
   layout: {
@@ -686,5 +698,24 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#555",
     fontFamily: "monospace",
     marginTop: "0.2rem",
+  },
+  mdTable: {
+    borderCollapse: "collapse",
+    width: "100%",
+    marginBottom: "1rem",
+    whiteSpace: "normal",
+  },
+  mdTh: {
+    border: "1px solid #e5e5e5",
+    padding: "0.4rem 0.75rem",
+    background: "#f5f5f5",
+    fontWeight: 600,
+    textAlign: "left",
+    whiteSpace: "normal",
+  },
+  mdTd: {
+    border: "1px solid #e5e5e5",
+    padding: "0.4rem 0.75rem",
+    whiteSpace: "normal",
   },
 };
