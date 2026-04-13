@@ -566,11 +566,36 @@ func TestClient_Stream_DoesNotInjectPdfIntoToolResultMessage(t *testing.T) {
 	}
 	body.Close()
 
-	// The last API message must be a user message whose FIRST block is the
-	// tool_result, not a document block.
 	if len(capturedMessages) == 0 {
 		t.Fatal("expected at least one captured message")
 	}
+
+	// Assert 1: the FIRST user message must contain the PDF document block.
+	// The LLM must still receive the PDF content even on iteration 2+.
+	var firstMsg struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Type   string `json:"type"`
+			Source *struct {
+				MediaType string `json:"media_type"`
+			} `json:"source,omitempty"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(capturedMessages[0], &firstMsg); err != nil {
+		t.Fatalf("unmarshalling first message: %v", err)
+	}
+	hasDocInFirst := false
+	for _, block := range firstMsg.Content {
+		if block.Type == "document" {
+			hasDocInFirst = true
+		}
+	}
+	if !hasDocInFirst {
+		t.Errorf("expected PDF document block in first user message so LLM retains PDF access on loop iterations 2+")
+	}
+
+	// Assert 2: the LAST message must be a user message whose FIRST block is
+	// the tool_result, not a document block.
 	last := capturedMessages[len(capturedMessages)-1]
 	var lastMsg struct {
 		Role    string `json:"role"`

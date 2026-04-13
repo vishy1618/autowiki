@@ -314,33 +314,44 @@ func buildRequestMessages(messages []store.Message) []requestMessage {
 func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD string, attachments []Attachment) (io.ReadCloser, error) {
 	reqMsgs := buildRequestMessages(messages)
 
-	// Prepend document content blocks for any PDF attachments to the last
+	// Inject PDF attachment content blocks into the most recent plain-text
 	// user message so the LLM receives the full document inline.
-	// Only inject into plain-text messages (string content). Structured
-	// messages already containing content blocks (e.g. tool_result blocks
-	// produced by the agentic loop) must not be modified — mixing document
-	// blocks with tool_result blocks violates Anthropic's requirement that a
-	// tool_result immediately follows its corresponding tool_use.
-	if len(attachments) > 0 && len(reqMsgs) > 0 {
-		last := &reqMsgs[len(reqMsgs)-1]
-		if last.Role == "user" {
-			if text, ok := last.Content.(string); ok {
-				var blocks []any
-				for _, att := range attachments {
-					blocks = append(blocks, map[string]any{
-						"type": "document",
-						"source": map[string]any{
-							"type":       "base64",
-							"media_type": att.MediaType,
-							"data":       base64.StdEncoding.EncodeToString(att.Data),
-						},
-					})
-				}
-				if text != "" {
-					blocks = append(blocks, map[string]any{"type": "text", "text": text})
-				}
-				last.Content = blocks
+	//
+	// We search backwards because on agentic loop iterations 2+, the last
+	// message is a user message containing a tool_result block (structured
+	// []any content). We must not touch those — mixing document blocks with
+	// tool_result blocks violates Anthropic's requirement that a tool_result
+	// immediately follows its corresponding tool_use.
+	//
+	// Injecting into the original user message (the one that carries the
+	// "[Attached PDF: …]" context line) ensures the LLM retains access to
+	// the PDF on every iteration of the loop.
+	if len(attachments) > 0 {
+		for i := len(reqMsgs) - 1; i >= 0; i-- {
+			msg := &reqMsgs[i]
+			if msg.Role != "user" {
+				continue
 			}
+			text, ok := msg.Content.(string)
+			if !ok {
+				continue // structured content (e.g. tool_result) — skip
+			}
+			var blocks []any
+			for _, att := range attachments {
+				blocks = append(blocks, map[string]any{
+					"type": "document",
+					"source": map[string]any{
+						"type":       "base64",
+						"media_type": att.MediaType,
+						"data":       base64.StdEncoding.EncodeToString(att.Data),
+					},
+				})
+			}
+			if text != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": text})
+			}
+			msg.Content = blocks
+			break
 		}
 	}
 
