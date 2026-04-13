@@ -14,7 +14,7 @@ type ChatSession struct {
 type Message struct {
 	ID        string    `json:"id"`
 	SessionID string    `json:"session_id"`
-	Role      string    `json:"role"` // "user" | "assistant"
+	Role      string    `json:"role"` // "user" | "assistant" | "tool_result"
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
 }

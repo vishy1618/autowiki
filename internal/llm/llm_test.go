@@ -307,6 +307,90 @@ func TestClient_Stream_SystemPromptInstructsLLMToMaintainIndex(t *testing.T) {
 	body.Close()
 }
 
+func TestClient_Stream_SendsAssistantContentBlocksWhenContentIsJSONArray(t *testing.T) {
+	// When an assistant message has a JSON-array Content (text + tool_use
+	// blocks), the client must send it as a content array — not a plain string.
+	var capturedMessages []json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		capturedMessages = body.Messages
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	messages := []store.Message{
+		{Role: "user", Content: "I learned Go has interfaces"},
+		{Role: "assistant", Content: `[{"type":"text","text":"Saving!"},{"type":"tool_use","id":"toolu_abc","name":"save_to_vault","input":{}}]`},
+		{Role: "tool_result", Content: `{"tool_use_id":"toolu_abc","content":"saved: notes/go.md","is_error":false}`},
+		{Role: "user", Content: "What did I tell you about Go?"},
+	}
+
+	body, err := client.Stream(t.Context(), messages, "")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+
+	// Expect 3 API messages: user, assistant, merged-user (tool_result + text).
+	if len(capturedMessages) != 3 {
+		t.Fatalf("expected 3 messages sent to API, got %d", len(capturedMessages))
+	}
+
+	// Assistant message content must be an array, not a string.
+	var assistantMsg struct {
+		Role    string            `json:"role"`
+		Content []json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(capturedMessages[1], &assistantMsg); err != nil {
+		t.Fatalf("unmarshalling assistant message: %v", err)
+	}
+	if assistantMsg.Role != "assistant" {
+		t.Errorf("expected assistant role, got %q", assistantMsg.Role)
+	}
+	if len(assistantMsg.Content) != 2 {
+		t.Errorf("expected 2 content blocks in assistant message, got %d", len(assistantMsg.Content))
+	}
+
+	// Last message must be user with tool_result block merged with text block.
+	var mergedMsg struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Type      string `json:"type"`
+			Text      string `json:"text,omitempty"`
+			ToolUseID string `json:"tool_use_id,omitempty"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(capturedMessages[2], &mergedMsg); err != nil {
+		t.Fatalf("unmarshalling merged user message: %v", err)
+	}
+	if mergedMsg.Role != "user" {
+		t.Errorf("expected user role for merged message, got %q", mergedMsg.Role)
+	}
+	if len(mergedMsg.Content) != 2 {
+		t.Fatalf("expected 2 content blocks in merged message, got %d", len(mergedMsg.Content))
+	}
+	if mergedMsg.Content[0].Type != "tool_result" {
+		t.Errorf("expected first block to be tool_result, got %q", mergedMsg.Content[0].Type)
+	}
+	if mergedMsg.Content[0].ToolUseID != "toolu_abc" {
+		t.Errorf("expected tool_use_id %q, got %q", "toolu_abc", mergedMsg.Content[0].ToolUseID)
+	}
+	if mergedMsg.Content[1].Type != "text" {
+		t.Errorf("expected second block to be text, got %q", mergedMsg.Content[1].Type)
+	}
+	if mergedMsg.Content[1].Text != "What did I tell you about Go?" {
+		t.Errorf("expected user text in merged message, got %q", mergedMsg.Content[1].Text)
+	}
+}
+
 func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
 	// Arrange — capture the system prompt the client sends.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

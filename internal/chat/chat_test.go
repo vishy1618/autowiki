@@ -3,6 +3,7 @@ package chat_test
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -280,6 +281,86 @@ func TestHandler_PostChat_InjectsAttachmentDescriptionIntoContext(t *testing.T) 
 	}
 	if !strings.Contains(userContent, attachPath) {
 		t.Errorf("expected vault path %q in LLM context; user message: %q", attachPath, userContent)
+	}
+}
+
+func TestHandler_PostChat_StoresAssistantContentBlocksAndToolResultAfterVaultWrite(t *testing.T) {
+	// When the LLM calls save_to_vault, the handler must:
+	// (a) store the assistant message with the full content-block array so the
+	//     conversation history includes the tool_use block, and
+	// (b) store a tool_result message so Anthropic knows the outcome on the
+	//     next turn.
+	cs := store.NewMemChatStore()
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	h := chat.NewHandler(cs, &stubStreamer{body: toolUseAnthropicSSE}, vm)
+
+	form := url.Values{"message": {"I learned about Go interfaces"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	session, _ := cs.ResolveSession()
+	msgs, _ := cs.ListMessages(session.ID)
+
+	// Expect: user, assistant, tool_result
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages (user, assistant, tool_result), got %d: %v", len(msgs), msgs)
+	}
+
+	// (a) Assistant message must be a JSON array containing a tool_use block.
+	assistantMsg := msgs[1]
+	if assistantMsg.Role != "assistant" {
+		t.Fatalf("expected assistant role, got %q", assistantMsg.Role)
+	}
+	if len(assistantMsg.Content) == 0 || assistantMsg.Content[0] != '[' {
+		t.Errorf("expected assistant content to be a JSON array, got %q", assistantMsg.Content)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(assistantMsg.Content), &blocks); err != nil {
+		t.Fatalf("parsing assistant content blocks: %v", err)
+	}
+	hasToolUse := false
+	for _, b := range blocks {
+		if b.Type == "tool_use" {
+			hasToolUse = true
+		}
+	}
+	if !hasToolUse {
+		t.Errorf("expected tool_use block in assistant content, got: %v", blocks)
+	}
+
+	// (b) tool_result message must reference the tool_use and report success.
+	toolResult := msgs[2]
+	if toolResult.Role != "tool_result" {
+		t.Fatalf("expected tool_result role, got %q", toolResult.Role)
+	}
+	var tr struct {
+		ToolUseID string `json:"tool_use_id"`
+		IsError   bool   `json:"is_error"`
+		Content   string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(toolResult.Content), &tr); err != nil {
+		t.Fatalf("parsing tool_result content: %v", err)
+	}
+	if tr.ToolUseID == "" {
+		t.Error("expected non-empty tool_use_id in tool_result")
+	}
+	if tr.IsError {
+		t.Error("expected is_error=false for successful write")
+	}
+	if tr.Content == "" {
+		t.Error("expected non-empty content in tool_result (saved paths)")
 	}
 }
 

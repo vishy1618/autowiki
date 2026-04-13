@@ -127,6 +127,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	// Parse Anthropic SSE, forwarding text deltas and collecting tool input.
 	var assembled strings.Builder
 	var toolJSONBuf strings.Builder
+	var toolUseID, toolUseName string
 	inToolUseBlock := false
 
 	scanner := bufio.NewScanner(body)
@@ -144,14 +145,19 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 
 		switch lastEvent {
 		case "content_block_start":
-			// Detect the start of a tool_use block.
 			var payload struct {
 				ContentBlock struct {
 					Type string `json:"type"`
+					ID   string `json:"id"`
+					Name string `json:"name"`
 				} `json:"content_block"`
 			}
 			if err := json.Unmarshal([]byte(raw), &payload); err == nil {
 				inToolUseBlock = payload.ContentBlock.Type == "tool_use"
+				if inToolUseBlock {
+					toolUseID = payload.ContentBlock.ID
+					toolUseName = payload.ContentBlock.Name
+				}
 			}
 
 		case "content_block_delta":
@@ -181,16 +187,34 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the assembled assistant reply.
+	// Persist the assistant reply. If a tool was called, store the full
+	// content-block array (text + tool_use) so the history is complete and
+	// Anthropic can match it with the tool_result on the next turn.
+	assistantContent := assembled.String()
+	if toolUseID != "" {
+		// Parse the accumulated input JSON so we can embed it as an object.
+		var toolInput json.RawMessage
+		if err := json.Unmarshal([]byte(toolJSONBuf.String()), &toolInput); err != nil {
+			toolInput = json.RawMessage("{}")
+		}
+		blocks, err := json.Marshal([]any{
+			map[string]any{"type": "text", "text": assembled.String()},
+			map[string]any{"type": "tool_use", "id": toolUseID, "name": toolUseName, "input": toolInput},
+		})
+		if err == nil {
+			assistantContent = string(blocks)
+		}
+	}
 	_ = h.store.AppendMessage(store.Message{
 		SessionID: session.ID,
 		Role:      "assistant",
-		Content:   assembled.String(),
+		Content:   assistantContent,
 	})
 
-	// If the LLM called save_to_vault, execute writes and emit vault event.
+	// If the LLM called save_to_vault, execute writes, emit vault event, and
+	// store a tool_result so the LLM knows the outcome on the next turn.
 	if toolJSONBuf.Len() > 0 {
-		h.applyVaultWrites(w, toolJSONBuf.String(), canFlush, flusher)
+		h.applyVaultWrites(w, session.ID, toolUseID, toolJSONBuf.String(), canFlush, flusher)
 	}
 
 	// Emit done event.
@@ -209,13 +233,15 @@ type vaultWriteInput struct {
 }
 
 // applyVaultWrites parses the tool JSON, writes each page, appends the log,
-// and emits a vault SSE event.
-func (h *Handler) applyVaultWrites(w io.Writer, toolJSON string, canFlush bool, flusher http.Flusher) {
+// emits a vault SSE event, and stores a tool_result message.
+func (h *Handler) applyVaultWrites(w io.Writer, sessionID, toolUseID, toolJSON string, canFlush bool, flusher http.Flusher) {
 	var input vaultWriteInput
 	if err := json.Unmarshal([]byte(toolJSON), &input); err != nil {
+		h.storeToolResult(sessionID, toolUseID, "invalid tool input", true)
 		return
 	}
 	if len(input.Pages) == 0 {
+		h.storeToolResult(sessionID, toolUseID, "no pages provided", true)
 		return
 	}
 
@@ -226,11 +252,15 @@ func (h *Handler) applyVaultWrites(w io.Writer, toolJSON string, canFlush bool, 
 		}
 	}
 	if len(changed) == 0 {
+		h.storeToolResult(sessionID, toolUseID, "all page writes failed", true)
 		return
 	}
 
 	// Append a single log entry listing all changed paths.
 	_ = h.vault.AppendLog(fmt.Sprintf("wrote %s", strings.Join(changed, ", ")))
+
+	// Store tool_result so the LLM knows the outcome on the next turn.
+	h.storeToolResult(sessionID, toolUseID, fmt.Sprintf("saved: %s", strings.Join(changed, ", ")), false)
 
 	// Build vault SSE payload.
 	type change struct {
@@ -248,6 +278,23 @@ func (h *Handler) applyVaultWrites(w io.Writer, toolJSON string, canFlush bool, 
 	if canFlush {
 		flusher.Flush()
 	}
+}
+
+// storeToolResult persists a tool_result message for the given tool_use_id.
+func (h *Handler) storeToolResult(sessionID, toolUseID, content string, isError bool) {
+	tr, err := json.Marshal(map[string]any{
+		"tool_use_id": toolUseID,
+		"content":     content,
+		"is_error":    isError,
+	})
+	if err != nil {
+		return
+	}
+	_ = h.store.AppendMessage(store.Message{
+		SessionID: sessionID,
+		Role:      "tool_result",
+		Content:   string(tr),
+	})
 }
 
 // writeSSE writes a single SSE event to w.

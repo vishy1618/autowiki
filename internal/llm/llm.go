@@ -44,9 +44,10 @@ func NewClient(cfg Config) *Client {
 }
 
 // requestMessage is the per-message shape expected by the Anthropic API.
+// Content is either a plain string or a []any of content blocks.
 type requestMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 // systemPromptBase is the fixed part of the system prompt sent with every
@@ -97,6 +98,13 @@ type streamRequest struct {
 	Messages   []requestMessage `json:"messages"`
 	Tools      []any            `json:"tools"`
 	ToolChoice map[string]any   `json:"tool_choice"`
+}
+
+// toolResultContent holds the parsed fields from a tool_result store message.
+type toolResultContent struct {
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error"`
 }
 
 // describeImagePrompt is sent with the image so the LLM produces a concise
@@ -189,15 +197,82 @@ func (c *Client) DescribeImage(ctx context.Context, data []byte, mediaType strin
 	return "", nil
 }
 
+// buildRequestMessages converts store messages into the Anthropic API format.
+//
+// Three special cases:
+//  1. "assistant" messages whose Content is a JSON array are sent with a
+//     content-block array (text + tool_use blocks) rather than a plain string.
+//  2. "tool_result" messages are merged with the following "user" message so
+//     we never send two consecutive user-role messages to the API.
+//  3. A trailing "tool_result" with no following user message is sent as a
+//     standalone user message with just the tool_result block.
+func buildRequestMessages(messages []store.Message) []requestMessage {
+	out := make([]requestMessage, 0, len(messages))
+	for i := 0; i < len(messages); i++ {
+		m := messages[i]
+
+		switch m.Role {
+		case "tool_result":
+			var tr toolResultContent
+			if err := json.Unmarshal([]byte(m.Content), &tr); err != nil {
+				// Malformed tool_result: skip rather than corrupt the history.
+				continue
+			}
+			trBlock := map[string]any{
+				"type":        "tool_result",
+				"tool_use_id": tr.ToolUseID,
+				"content":     tr.Content,
+			}
+			if tr.IsError {
+				trBlock["is_error"] = true
+			}
+
+			// Merge with the next user message if present.
+			if i+1 < len(messages) && messages[i+1].Role == "user" {
+				i++
+				next := messages[i]
+				out = append(out, requestMessage{
+					Role: "user",
+					Content: []any{
+						trBlock,
+						map[string]any{"type": "text", "text": next.Content},
+					},
+				})
+			} else {
+				out = append(out, requestMessage{
+					Role:    "user",
+					Content: []any{trBlock},
+				})
+			}
+
+		case "assistant":
+			// If Content is a JSON array it contains content blocks.
+			if len(m.Content) > 0 && m.Content[0] == '[' {
+				var blocks []json.RawMessage
+				if err := json.Unmarshal([]byte(m.Content), &blocks); err == nil {
+					rawBlocks := make([]any, len(blocks))
+					for j, b := range blocks {
+						rawBlocks[j] = json.RawMessage(b)
+					}
+					out = append(out, requestMessage{Role: "assistant", Content: rawBlocks})
+					continue
+				}
+			}
+			out = append(out, requestMessage{Role: m.Role, Content: m.Content})
+
+		default:
+			out = append(out, requestMessage{Role: m.Role, Content: m.Content})
+		}
+	}
+	return out
+}
+
 // Stream opens a streaming request to the Anthropic Messages API and returns
 // the raw SSE response body. The caller must close the returned ReadCloser.
 // indexMD is the current content of index.md in the vault; pass an empty
 // string if the index does not yet exist.
 func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD string) (io.ReadCloser, error) {
-	reqMsgs := make([]requestMessage, 0, len(messages))
-	for _, m := range messages {
-		reqMsgs = append(reqMsgs, requestMessage{Role: m.Role, Content: m.Content})
-	}
+	reqMsgs := buildRequestMessages(messages)
 
 	system := systemPromptBase
 	if indexMD != "" {
