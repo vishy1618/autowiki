@@ -22,15 +22,17 @@ import (
 
 // stubStreamer is a fake llm.Streamer that returns a fixed SSE body.
 type stubStreamer struct {
-	body              string
-	err               error
-	capturedMsgs      []store.Message  // last call's messages
+	body                string
+	err                 error
+	capturedMsgs        []store.Message  // last call's messages
 	capturedAttachments []llm.Attachment // last call's PDF attachments
+	capturedSchema      string           // last call's schema content
 }
 
-func (s *stubStreamer) Stream(_ context.Context, msgs []store.Message, _ string, attachments []llm.Attachment) (io.ReadCloser, error) {
+func (s *stubStreamer) Stream(_ context.Context, msgs []store.Message, _ string, schema string, attachments []llm.Attachment) (io.ReadCloser, error) {
 	s.capturedMsgs = msgs
 	s.capturedAttachments = attachments
+	s.capturedSchema = schema
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -592,7 +594,7 @@ type multiResponseStreamer struct {
 	idx    int
 }
 
-func (s *multiResponseStreamer) Stream(_ context.Context, _ []store.Message, _ string, _ []llm.Attachment) (io.ReadCloser, error) {
+func (s *multiResponseStreamer) Stream(_ context.Context, _ []store.Message, _ string, _ string, _ []llm.Attachment) (io.ReadCloser, error) {
 	body := s.bodies[len(s.bodies)-1] // default: last body
 	if s.idx < len(s.bodies) {
 		body = s.bodies[s.idx]
@@ -738,6 +740,34 @@ func TestHandler_PostChat_BreaksAfterMaxToolCalls(t *testing.T) {
 	}
 	if !hasError {
 		t.Errorf("expected error SSE event after max tool calls, got: %v", events)
+	}
+}
+
+func TestHandler_PostChat_ForwardsSchemaContentToStreamer(t *testing.T) {
+	// Arrange — pre-populate schema.md so EnsureSchema returns known content.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("schema.md", "# My Schema\n\nmy rules\n")
+
+	cs := store.NewMemChatStore()
+	streamer := &stubStreamer{body: minimalAnthropicSSE}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"hello"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — streamer received the schema content.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(streamer.capturedSchema, "my rules") {
+		t.Errorf("expected schema content forwarded to streamer, got %q", streamer.capturedSchema)
 	}
 }
 

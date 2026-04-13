@@ -18,7 +18,7 @@ import (
 // Streamer is the subset of llm.Client used by the chat handler.
 // Defined here so the handler can be tested with a stub.
 type Streamer interface {
-	Stream(ctx context.Context, messages []store.Message, indexMD string, attachments []llm.Attachment) (io.ReadCloser, error)
+	Stream(ctx context.Context, messages []store.Message, indexMD string, schemaContent string, attachments []llm.Attachment) (io.ReadCloser, error)
 }
 
 // Handler handles chat API requests.
@@ -122,10 +122,15 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	indexMD, _ := h.vault.ReadIndex()
+	schemaContent, err := h.vault.EnsureSchema()
+	if err != nil {
+		slog.Error("chat: failed to ensure schema.md", "error", err)
+		schemaContent = ""
+	}
 
 	// Open the first LLM stream before setting SSE headers so we can still
 	// return a proper 500 if the initial call fails.
-	body, err := h.streamer.Stream(r.Context(), history, indexMD, pdfAttachments)
+	body, err := h.streamer.Stream(r.Context(), history, indexMD, schemaContent, pdfAttachments)
 	if err != nil {
 		slog.Error("LLM stream failed", "error", err, "session_id", session.ID)
 		_ = h.store.AppendMessage(store.Message{
@@ -252,7 +257,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		body, err = h.streamer.Stream(r.Context(), history, indexMD, nil)
+		body, err = h.streamer.Stream(r.Context(), history, indexMD, schemaContent, nil)
 		if err != nil {
 			slog.Error("LLM stream failed in agentic loop", "error", err, "session_id", session.ID)
 			writeSSE(w, "error", fmt.Sprintf(`{"message":%q}`, err.Error()))

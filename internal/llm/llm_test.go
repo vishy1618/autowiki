@@ -78,7 +78,7 @@ func TestClient_Stream_YieldsTokenDeltas(t *testing.T) {
 	}
 
 	// Act
-	body, err := client.Stream(t.Context(), messages, "", nil)
+	body, err := client.Stream(t.Context(), messages, "", "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestClient_Stream_ReturnsErrorOnNon200(t *testing.T) {
 	})
 
 	// Act
-	_, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "x"}}, "", nil)
+	_, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "x"}}, "", "", nil)
 
 	// Assert
 	if err == nil {
@@ -239,7 +239,7 @@ func TestClient_Stream_IncludesSaveToVaultTool(t *testing.T) {
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", nil)
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestClient_Stream_IncludesIndexMDInSystemPrompt(t *testing.T) {
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "existing content", nil)
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "existing content", "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestClient_Stream_SystemPromptInstructsLLMToMaintainIndex(t *testing.T) {
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", nil)
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestClient_Stream_SendsAssistantContentBlocksWhenContentIsJSONArray(t *test
 		{Role: "user", Content: "What did I tell you about Go?"},
 	}
 
-	body, err := client.Stream(t.Context(), messages, "", nil)
+	body, err := client.Stream(t.Context(), messages, "", "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestClient_Stream_SendsPdfAttachmentAsDocumentContentBlock(t *testing.T) {
 		{MediaType: "application/pdf", Data: []byte("%PDF-1.4 fake")},
 	}
 
-	body, err := client.Stream(t.Context(), messages, "", attachments)
+	body, err := client.Stream(t.Context(), messages, "", "", attachments)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestClient_Stream_IncludesReadPageTool(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", nil)
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestClient_Stream_IncludesSearchVaultTool(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", nil)
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestClient_Stream_DoesNotInjectPdfIntoToolResultMessage(t *testing.T) {
 		{MediaType: "application/pdf", Data: []byte("%PDF-1.4 fake")},
 	}
 
-	body, err := client.Stream(t.Context(), messages, "", attachments)
+	body, err := client.Stream(t.Context(), messages, "", "", attachments)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -618,6 +618,90 @@ func TestClient_Stream_DoesNotInjectPdfIntoToolResultMessage(t *testing.T) {
 	}
 }
 
+func TestClient_Stream_IncludesSchemaInSystemPromptWhenProvided(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System string `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if !strings.Contains(body.System, "## Wiki Schema") {
+			t.Errorf("expected system prompt to contain Wiki Schema section, got: %q", body.System)
+		}
+		if !strings.Contains(body.System, "my conventions") {
+			t.Errorf("expected system prompt to contain schema content, got: %q", body.System)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "my conventions", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
+func TestClient_Stream_OmitsSchemaSection_WhenSchemaIsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System string `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if strings.Contains(body.System, "## Wiki Schema") {
+			t.Errorf("expected no Wiki Schema section when schema is empty, got: %q", body.System)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
+func TestClient_Stream_SystemPromptInstructsWikilinksAndSchemaConventions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System string `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if !strings.Contains(body.System, "[[wikilinks]]") {
+			t.Errorf("expected system prompt to mention [[wikilinks]], got: %q", body.System)
+		}
+		if !strings.Contains(body.System, "schema.md") {
+			t.Errorf("expected system prompt to mention schema.md, got: %q", body.System)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
 func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
 	// Arrange — capture the system prompt the client sends.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -641,7 +725,7 @@ func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", nil)
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}

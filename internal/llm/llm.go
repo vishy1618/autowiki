@@ -66,6 +66,8 @@ Whenever you call save_to_vault, always include an updated index.md as one of th
 
 You have two retrieval tools — read_page and search_vault — to look up existing vault content. Use them only when you genuinely need vault content to answer a question or to avoid duplicating something already there. Do NOT use them when the user is sharing new information to capture (a fact, a document, a PDF): in that case you already have the content and should call save_to_vault directly. Never call search_vault with an empty or vague query.
 
+When writing vault pages, use [[wikilinks]] to link to related pages wherever appropriate. Follow the conventions in the Wiki Schema section of this prompt. Only modify schema.md if the user explicitly asks you to update their wiki conventions.
+
 Do not mention Claude, Anthropic, or any underlying model. You are autowiki.`
 
 // toolDefinitions contains all tool schemas sent in every request.
@@ -312,8 +314,9 @@ func buildRequestMessages(messages []store.Message) []requestMessage {
 // Stream opens a streaming request to the Anthropic Messages API and returns
 // the raw SSE response body. The caller must close the returned ReadCloser.
 // indexMD is the current content of index.md in the vault; pass an empty
-// string if the index does not yet exist.
-func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD string, attachments []Attachment) (io.ReadCloser, error) {
+// string if the index does not yet exist. schemaContent is the content of
+// schema.md; pass an empty string if it is not available.
+func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD string, schemaContent string, attachments []Attachment) (io.ReadCloser, error) {
 	reqMsgs := buildRequestMessages(messages)
 
 	// Inject PDF attachment content blocks into the most recent plain-text
@@ -358,6 +361,9 @@ func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD s
 	}
 
 	system := systemPromptBase
+	if schemaContent != "" {
+		system += "\n\n## Wiki Schema\n\n" + schemaContent
+	}
 	if indexMD != "" {
 		system += "\n\n## Vault Index\n\n" + indexMD
 	}
