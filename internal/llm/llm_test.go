@@ -78,7 +78,7 @@ func TestClient_Stream_YieldsTokenDeltas(t *testing.T) {
 	}
 
 	// Act
-	body, err := client.Stream(t.Context(), messages, "")
+	body, err := client.Stream(t.Context(), messages, "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -181,73 +181,6 @@ func TestClient_DescribeImage_ReturnsErrorOnNon200(t *testing.T) {
 	}
 }
 
-func TestClient_DescribeDocument_SendsBase64PdfAndReturnsDescription(t *testing.T) {
-	// Arrange — stub server validates document request shape and returns a summary.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Messages []struct {
-				Content []struct {
-					Type   string `json:"type"`
-					Source *struct {
-						Type      string `json:"type"`
-						MediaType string `json:"media_type"`
-						Data      string `json:"data"`
-					} `json:"source,omitempty"`
-					Text string `json:"text,omitempty"`
-				} `json:"content"`
-			} `json:"messages"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		if len(body.Messages) == 0 {
-			t.Error("expected at least one message")
-		}
-		content := body.Messages[0].Content
-		hasDocument := false
-		for _, block := range content {
-			if block.Type == "document" && block.Source != nil &&
-				block.Source.Type == "base64" && block.Source.MediaType == "application/pdf" {
-				hasDocument = true
-			}
-		}
-		if !hasDocument {
-			t.Error("expected document content block with base64 source and application/pdf media type")
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, `{"content":[{"type":"text","text":"a two-page guide on Go interfaces"}],"stop_reason":"end_turn"}`)
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-
-	desc, err := client.DescribeDocument(t.Context(), []byte("%PDF-fake"), "application/pdf")
-
-	if err != nil {
-		t.Fatalf("DescribeDocument: %v", err)
-	}
-	if desc != "a two-page guide on Go interfaces" {
-		t.Errorf("want description %q, got %q", "a two-page guide on Go interfaces", desc)
-	}
-}
-
-func TestClient_DescribeDocument_ReturnsErrorOnNon200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":{"type":"authentication_error"}}`, http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "bad-key", BaseURL: srv.URL})
-
-	_, err := client.DescribeDocument(t.Context(), []byte("%PDF-fake"), "application/pdf")
-
-	if err == nil {
-		t.Fatal("expected error on 401 response, got nil")
-	}
-}
-
 func TestClient_Stream_ReturnsErrorOnNon200(t *testing.T) {
 	// Arrange
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -261,7 +194,7 @@ func TestClient_Stream_ReturnsErrorOnNon200(t *testing.T) {
 	})
 
 	// Act
-	_, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "")
+	_, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "x"}}, "", nil)
 
 	// Assert
 	if err == nil {
@@ -306,7 +239,7 @@ func TestClient_Stream_IncludesSaveToVaultTool(t *testing.T) {
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "")
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -337,7 +270,7 @@ func TestClient_Stream_IncludesIndexMDInSystemPrompt(t *testing.T) {
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "existing content")
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "existing content", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -367,7 +300,7 @@ func TestClient_Stream_SystemPromptInstructsLLMToMaintainIndex(t *testing.T) {
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "")
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -400,7 +333,7 @@ func TestClient_Stream_SendsAssistantContentBlocksWhenContentIsJSONArray(t *test
 		{Role: "user", Content: "What did I tell you about Go?"},
 	}
 
-	body, err := client.Stream(t.Context(), messages, "")
+	body, err := client.Stream(t.Context(), messages, "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -458,6 +391,74 @@ func TestClient_Stream_SendsAssistantContentBlocksWhenContentIsJSONArray(t *test
 	}
 }
 
+func TestClient_Stream_SendsPdfAttachmentAsDocumentContentBlock(t *testing.T) {
+	// Arrange — capture the messages the client sends and verify the last
+	// user message contains a document content block for the PDF.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type   string `json:"type"`
+					Source *struct {
+						Type      string `json:"type"`
+						MediaType string `json:"media_type"`
+						Data      string `json:"data"`
+					} `json:"source,omitempty"`
+					Text string `json:"text,omitempty"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+
+		// Find the last user message.
+		var lastUserContent []struct {
+			Type   string `json:"type"`
+			Source *struct {
+				Type      string `json:"type"`
+				MediaType string `json:"media_type"`
+				Data      string `json:"data"`
+			} `json:"source,omitempty"`
+			Text string `json:"text,omitempty"`
+		}
+		for _, msg := range body.Messages {
+			if msg.Role == "user" {
+				lastUserContent = msg.Content
+			}
+		}
+
+		hasDocumentBlock := false
+		for _, block := range lastUserContent {
+			if block.Type == "document" && block.Source != nil &&
+				block.Source.Type == "base64" && block.Source.MediaType == "application/pdf" {
+				hasDocumentBlock = true
+			}
+		}
+		if !hasDocumentBlock {
+			t.Error("expected last user message to contain a document content block for the PDF attachment")
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	messages := []store.Message{{Role: "user", Content: "summarise this PDF"}}
+	attachments := []llm.Attachment{
+		{MediaType: "application/pdf", Data: []byte("%PDF-1.4 fake")},
+	}
+
+	body, err := client.Stream(t.Context(), messages, "", attachments)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
 func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
 	// Arrange — capture the system prompt the client sends.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -481,7 +482,7 @@ func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "")
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}

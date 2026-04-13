@@ -236,6 +236,24 @@ func TestManager_WriteAndReadAttachmentMeta_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestManager_ReadAttachmentData_ReturnsRawBytes(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	content := []byte("%PDF-1.4 fake content")
+	path, err := m.SaveAttachment("doc.pdf", content)
+	if err != nil {
+		t.Fatalf("SaveAttachment: %v", err)
+	}
+
+	got, err := m.ReadAttachmentData(path)
+	if err != nil {
+		t.Fatalf("ReadAttachmentData: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("want %q, got %q", content, got)
+	}
+}
+
 func TestManager_ReadAttachmentMeta_SidecarStoredNextToFile(t *testing.T) {
 	dir := t.TempDir()
 	m := vault.NewManager(dir)

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/suvish/autowiki/internal/llm"
 	"github.com/suvish/autowiki/internal/store"
 	"github.com/suvish/autowiki/internal/vault"
 )
@@ -17,7 +18,7 @@ import (
 // Streamer is the subset of llm.Client used by the chat handler.
 // Defined here so the handler can be tested with a stub.
 type Streamer interface {
-	Stream(ctx context.Context, messages []store.Message, indexMD string) (io.ReadCloser, error)
+	Stream(ctx context.Context, messages []store.Message, indexMD string, attachments []llm.Attachment) (io.ReadCloser, error)
 }
 
 // Handler handles chat API requests.
@@ -48,8 +49,12 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve attachment context: load sidecar metadata for each referenced
-	// attachment and prepend descriptions to the user message.
+	// Resolve attachment context.
+	// - Non-PDF attachments (images): inject a text line with filename, vault path,
+	//   and description so the LLM knows what was shared and where it lives.
+	// - PDF attachments: load raw bytes and send as document content blocks inline
+	//   in the LLM request; a brief text line still names the file.
+	var pdfAttachments []llm.Attachment
 	attachmentIDs := r.Form["attachment_ids"]
 	if len(attachmentIDs) > 0 {
 		var contextLines []string
@@ -58,7 +63,19 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue // silently skip unknown/missing attachments
 			}
-			if meta.Description != "" {
+			if meta.MediaType == "application/pdf" {
+				data, err := h.vault.ReadAttachmentData(id)
+				if err != nil {
+					slog.Error("chat: failed to read PDF attachment", "path", id, "error", err)
+					continue
+				}
+				pdfAttachments = append(pdfAttachments, llm.Attachment{
+					MediaType: meta.MediaType,
+					Data:      data,
+				})
+				contextLines = append(contextLines,
+					fmt.Sprintf("[Attached PDF: %s (vault path: %s)]", meta.OriginalName, id))
+			} else if meta.Description != "" {
 				contextLines = append(contextLines,
 					fmt.Sprintf("[Attached: %s (vault path: %s) — %s]", meta.OriginalName, id, meta.Description))
 			} else {
@@ -99,7 +116,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	indexMD, _ := h.vault.ReadIndex()
 
 	// Open the SSE stream from the LLM.
-	body, err := h.streamer.Stream(r.Context(), history, indexMD)
+	body, err := h.streamer.Stream(r.Context(), history, indexMD, pdfAttachments)
 	if err != nil {
 		slog.Error("LLM stream failed", "error", err, "session_id", session.ID)
 		// Persist an empty assistant message so the conversation history

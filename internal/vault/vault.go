@@ -116,6 +116,12 @@ func (m *Manager) ReadIndex() (string, error) {
 	return m.ReadFile("index.md")
 }
 
+// ReadAttachmentData reads the raw bytes of a saved attachment by its
+// vault-relative path (e.g. "_attachments/doc-20260413-abc123.pdf").
+func (m *Manager) ReadAttachmentData(path string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(m.root, path))
+}
+
 // ReadFile reads a vault-relative .md file and returns its contents.
 // Returns an empty string (no error) when the file does not exist.
 func (m *Manager) ReadFile(path string) (string, error) {

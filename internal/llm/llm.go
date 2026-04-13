@@ -89,6 +89,13 @@ var toolDefinition = map[string]any{
 	},
 }
 
+// Attachment is a file to be sent inline in the current chat turn.
+// Only PDFs are supported; the Data field holds the raw file bytes.
+type Attachment struct {
+	MediaType string
+	Data      []byte
+}
+
 // streamRequest is the body sent to POST /v1/messages.
 type streamRequest struct {
 	Model      string           `json:"model"`
@@ -106,10 +113,6 @@ type toolResultContent struct {
 	Content   string `json:"content"`
 	IsError   bool   `json:"is_error"`
 }
-
-// describeDocumentPrompt is sent with a PDF document so the LLM produces a
-// concise summary suitable for injecting into the conversation context.
-const describeDocumentPrompt = "Summarise this document concisely in 2–4 sentences. Focus on the key information it contains, suitable for indexing in a personal knowledge base."
 
 // describeImagePrompt is sent with the image so the LLM produces a concise
 // description suitable for knowledge indexing.
@@ -159,74 +162,6 @@ func (c *Client) DescribeImage(ctx context.Context, data []byte, mediaType strin
 					map[string]any{
 						"type": "text",
 						"text": describeImagePrompt,
-					},
-				},
-			},
-		},
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshalling request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.cfg.BaseURL+messagesPath, bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("creating request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.cfg.APIKey)
-	req.Header.Set("anthropic-version", anthropicVersion)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("sending request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("anthropic API returned %d", resp.StatusCode)
-	}
-
-	var result describeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decoding response: %w", err)
-	}
-	for _, block := range result.Content {
-		if block.Type == "text" {
-			return block.Text, nil
-		}
-	}
-	return "", nil
-}
-
-// DescribeDocument sends a PDF to the Anthropic API and returns a concise
-// summary. mediaType should be "application/pdf".
-func (c *Client) DescribeDocument(ctx context.Context, data []byte, mediaType string) (string, error) {
-	encoded := base64.StdEncoding.EncodeToString(data)
-
-	reqBody := describeRequest{
-		Model:     c.cfg.Model,
-		MaxTokens: 512,
-		Messages: []struct {
-			Role    string `json:"role"`
-			Content []any  `json:"content"`
-		}{
-			{
-				Role: "user",
-				Content: []any{
-					map[string]any{
-						"type": "document",
-						"source": map[string]any{
-							"type":       "base64",
-							"media_type": mediaType,
-							"data":       encoded,
-						},
-					},
-					map[string]any{
-						"type": "text",
-						"text": describeDocumentPrompt,
 					},
 				},
 			},
@@ -343,8 +278,32 @@ func buildRequestMessages(messages []store.Message) []requestMessage {
 // the raw SSE response body. The caller must close the returned ReadCloser.
 // indexMD is the current content of index.md in the vault; pass an empty
 // string if the index does not yet exist.
-func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD string) (io.ReadCloser, error) {
+func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD string, attachments []Attachment) (io.ReadCloser, error) {
 	reqMsgs := buildRequestMessages(messages)
+
+	// Prepend document content blocks for any PDF attachments to the last
+	// user message so the LLM receives the full document inline.
+	if len(attachments) > 0 && len(reqMsgs) > 0 {
+		last := &reqMsgs[len(reqMsgs)-1]
+		if last.Role == "user" {
+			var blocks []any
+			for _, att := range attachments {
+				blocks = append(blocks, map[string]any{
+					"type": "document",
+					"source": map[string]any{
+						"type":       "base64",
+						"media_type": att.MediaType,
+						"data":       base64.StdEncoding.EncodeToString(att.Data),
+					},
+				})
+			}
+			// Append the original text content as a text block after the documents.
+			if text, ok := last.Content.(string); ok && text != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": text})
+			}
+			last.Content = blocks
+		}
+	}
 
 	system := systemPromptBase
 	if indexMD != "" {

@@ -15,19 +15,22 @@ import (
 	"testing"
 
 	"github.com/suvish/autowiki/internal/chat"
+	"github.com/suvish/autowiki/internal/llm"
 	"github.com/suvish/autowiki/internal/store"
 	"github.com/suvish/autowiki/internal/vault"
 )
 
 // stubStreamer is a fake llm.Streamer that returns a fixed SSE body.
 type stubStreamer struct {
-	body         string
-	err          error
-	capturedMsgs []store.Message // last call's messages
+	body              string
+	err               error
+	capturedMsgs      []store.Message  // last call's messages
+	capturedAttachments []llm.Attachment // last call's PDF attachments
 }
 
-func (s *stubStreamer) Stream(_ context.Context, msgs []store.Message, _ string) (io.ReadCloser, error) {
+func (s *stubStreamer) Stream(_ context.Context, msgs []store.Message, _ string, attachments []llm.Attachment) (io.ReadCloser, error) {
 	s.capturedMsgs = msgs
+	s.capturedAttachments = attachments
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -491,6 +494,62 @@ func TestHandler_PostChat_UnknownAttachmentIDIsSkipped(t *testing.T) {
 	// Assert — request succeeds; unknown attachment is silently skipped.
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHandler_PostChat_SendsPdfAttachmentInlineToStreamer(t *testing.T) {
+	// Arrange — save a real PDF file to the vault and write its sidecar.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	pdfData := []byte("%PDF-1.4 fake content")
+	attachPath, _ := vm.SaveAttachment("doc.pdf", pdfData)
+	_ = vm.WriteAttachmentMeta(attachPath, vault.AttachmentMeta{
+		ID:           "att_doc",
+		OriginalName: "doc.pdf",
+		MediaType:    "application/pdf",
+	})
+
+	cs := store.NewMemChatStore()
+	streamer := &stubStreamer{body: minimalAnthropicSSE}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{
+		"message":        {"summarise this"},
+		"attachment_ids": {attachPath},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — the streamer received the PDF as an llm.Attachment.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(streamer.capturedAttachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(streamer.capturedAttachments))
+	}
+	att := streamer.capturedAttachments[0]
+	if att.MediaType != "application/pdf" {
+		t.Errorf("want media type %q, got %q", "application/pdf", att.MediaType)
+	}
+	if string(att.Data) != string(pdfData) {
+		t.Errorf("attachment data mismatch: want %q, got %q", pdfData, att.Data)
+	}
+
+	// The user message text should reference the file by name.
+	var userContent string
+	for _, msg := range streamer.capturedMsgs {
+		if msg.Role == "user" {
+			userContent = msg.Content
+			break
+		}
+	}
+	if !strings.Contains(userContent, "doc.pdf") {
+		t.Errorf("expected filename in user message context; got %q", userContent)
 	}
 }
 

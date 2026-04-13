@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"log"
+	"log/slog"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -16,7 +17,12 @@ import (
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	dev := flag.Bool("dev", false, "proxy non-API traffic to Remix dev server")
+	debug := flag.Bool("debug", false, "enable debug-level logging")
 	flag.Parse()
+
+	if *debug {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	}
 
 	// Load .env if present. Existing shell env vars take precedence.
 	if _, err := os.Stat(".env"); err == nil {
