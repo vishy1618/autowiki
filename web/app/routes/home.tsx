@@ -65,6 +65,14 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Wrapper around fetch that redirects to /login on any 401 response.
+  function apiFetch(url: string, init?: RequestInit) {
+    return fetch(url, init).then((r) => {
+      if (r.status === 401) navigate("/login", { replace: true });
+      return r;
+    });
+  }
+
   async function uploadFile(file: File) {
     const localId = crypto.randomUUID();
     const previewUrl = file.type.startsWith("image/")
@@ -79,7 +87,7 @@ export default function Home() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const resp = await fetch("/api/attachments", { method: "POST", body: form });
+      const resp = await apiFetch("/api/attachments", { method: "POST", body: form });
       if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
       const data = await resp.json() as { path: string };
       setPendingAttachments((prev) =>
@@ -149,7 +157,7 @@ export default function Home() {
       for (const att of readyAttachments) {
         body.append("attachment_ids", att.path!);
       }
-      const resp = await fetch("/api/chat", {
+      const resp = await apiFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: body.toString(),

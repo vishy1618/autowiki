@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, createMemoryRouter, RouterProvider } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Home from "./home";
 
@@ -13,6 +13,19 @@ function renderHome() {
       <Home />
     </MemoryRouter>
   );
+}
+
+/**
+ * Render Home with a real memory router so we can inspect navigation.
+ * Returns the router instance for asserting on `router.state.location.pathname`.
+ */
+function renderHomeWithRouter() {
+  const router = createMemoryRouter([
+    { path: "/", element: <Home /> },
+    { path: "/login", element: <div data-testid="login-page">Login</div> },
+  ]);
+  render(<RouterProvider router={router} />);
+  return router;
 }
 
 /**
@@ -705,6 +718,54 @@ describe("Home — chat UI", () => {
       expect(screen.getByText(/Reading second\.md/)).toBeInTheDocument();
       expect(screen.queryByText(/Reading first\.md/)).not.toBeInTheDocument();
     });
+  });
+
+  it("redirects to /login when /api/chat returns 401", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Unauthorized", { status: 401 })
+    );
+
+    const user = userEvent.setup();
+    const router = renderHomeWithRouter();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    await user.type(screen.getByPlaceholderText(/message autowiki/i), "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/login")
+    );
+  });
+
+  it("redirects to /login when /api/attachments returns 401", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Unauthorized", { status: 401 })
+    );
+
+    const user = userEvent.setup();
+    const router = renderHomeWithRouter();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    const fileInput = screen.getByTestId("file-input") as HTMLInputElement;
+    await user.upload(fileInput, new File(["data"], "doc.pdf", { type: "application/pdf" }));
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/login")
+    );
   });
 
   it("does not show vault summary when no vault event", async () => {
