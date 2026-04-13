@@ -642,6 +642,71 @@ describe("Home — chat UI", () => {
     );
   });
 
+  it("shows status message during streaming", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    // Stream: status event with no following delta — status should remain visible.
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        sseStream(
+          "event: status\ndata: {\"message\":\"Reading programming/go.md\u2026\"}\n\n",
+          "event: done\ndata: {\"session_id\":\"s1\"}\n\n"
+        ),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    const user = userEvent.setup();
+    renderHome();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    await user.type(screen.getByPlaceholderText(/message autowiki/i), "tell me about Go");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    // Status text must appear in the assistant bubble.
+    await waitFor(() =>
+      expect(screen.getByText(/Reading programming\/go\.md/)).toBeInTheDocument()
+    );
+  });
+
+  it("status message is replaced by the next one", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTH_OK), { status: 200 })
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        sseStream(
+          "event: status\ndata: {\"message\":\"Reading first.md\u2026\"}\n\n",
+          "event: status\ndata: {\"message\":\"Reading second.md\u2026\"}\n\n",
+          "event: done\ndata: {\"session_id\":\"s1\"}\n\n"
+        ),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } }
+      )
+    );
+
+    const user = userEvent.setup();
+    renderHome();
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+
+    await user.type(screen.getByPlaceholderText(/message autowiki/i), "tell me about Go");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    // Only the second status must be visible; the first must be gone.
+    await waitFor(() => {
+      expect(screen.getByText(/Reading second\.md/)).toBeInTheDocument();
+      expect(screen.queryByText(/Reading first\.md/)).not.toBeInTheDocument();
+    });
+  });
+
   it("does not show vault summary when no vault event", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 

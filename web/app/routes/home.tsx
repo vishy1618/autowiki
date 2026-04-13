@@ -24,6 +24,7 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  statusMessage?: string;
   vaultChanges?: VaultChange[];
   attachments?: PendingAttachment[];
 }
@@ -176,7 +177,21 @@ export default function Home() {
             currentEvent = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
             const data = line.slice(6).trim();
-            if (currentEvent === "delta") {
+            if (currentEvent === "status") {
+                try {
+                  const { message } = JSON.parse(data) as { message: string };
+                  setMessages((prev) => {
+                    const next = [...prev];
+                    const last = next[next.length - 1];
+                    if (last?.role === "assistant") {
+                      next[next.length - 1] = { ...last, statusMessage: message };
+                    }
+                    return next;
+                  });
+                } catch {
+                  // ignore malformed status
+                }
+              } else if (currentEvent === "delta") {
               try {
                 const { text } = JSON.parse(data) as { text: string };
                 setMessages((prev) => {
@@ -185,6 +200,7 @@ export default function Home() {
                   if (last?.role === "assistant") {
                     next[next.length - 1] = {
                       ...last,
+                      statusMessage: undefined,
                       content: last.content + text,
                     };
                   }
@@ -316,6 +332,9 @@ export default function Home() {
             )}
             {msg.role === "assistant" ? (
               <div style={styles.bubbleText}>
+                {msg.statusMessage && (
+                  <em style={styles.statusLine}>{msg.statusMessage}</em>
+                )}
                 <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
                 {msg.streaming && <span style={styles.cursor}>▌</span>}
                 {!msg.streaming && msg.vaultChanges && msg.vaultChanges.length > 0 && (
@@ -630,6 +649,12 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "6px",
     height: "fit-content",
     alignSelf: "flex-end",
+  },
+  statusLine: {
+    display: "block",
+    color: "#888",
+    fontSize: "0.85rem",
+    marginBottom: "0.4rem",
   },
   vaultSummary: {
     marginTop: "0.75rem",
