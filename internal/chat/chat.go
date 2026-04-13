@@ -231,6 +231,8 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Re-fetch history (tool_result just appended) and open the next stream.
+		// PDF attachments are not re-sent on loop iterations 2+ — the LLM
+		// already has the document in context from the first call.
 		history, err = h.store.ListMessages(session.ID)
 		if err != nil {
 			writeSSE(w, "error", `{"message":"store error"}`)
@@ -239,7 +241,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		body, err = h.streamer.Stream(r.Context(), history, indexMD, pdfAttachments)
+		body, err = h.streamer.Stream(r.Context(), history, indexMD, nil)
 		if err != nil {
 			slog.Error("LLM stream failed in agentic loop", "error", err, "session_id", session.ID)
 			writeSSE(w, "error", fmt.Sprintf(`{"message":%q}`, err.Error()))
