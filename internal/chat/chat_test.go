@@ -3,6 +3,7 @@ package chat_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -275,6 +276,51 @@ func TestHandler_PostChat_InjectsAttachmentDescriptionIntoContext(t *testing.T) 
 	}
 	if !found {
 		t.Errorf("expected attachment description in LLM context; messages: %v", streamer.capturedMsgs)
+	}
+}
+
+func TestHandler_PostChat_PersistsEmptyAssistantMessageOnLLMFailure(t *testing.T) {
+	// Arrange — streamer always fails so the LLM is unavailable.
+	cs := store.NewMemChatStore()
+	vm := vault.NewManager(t.TempDir())
+	h := chat.NewHandler(cs, &stubStreamer{err: errors.New("llm down")}, vm)
+
+	form := url.Values{"message": {"hello"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — handler returns 500.
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+
+	// Assert — store contains two messages: the user message and an empty
+	// assistant placeholder. Without the placeholder the next request would
+	// send two consecutive user messages, which Anthropic rejects with 400.
+	session, err := cs.ResolveSession()
+	if err != nil {
+		t.Fatalf("ResolveSession: %v", err)
+	}
+	msgs, err := cs.ListMessages(session.ID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages (user + empty assistant), got %d: %v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" {
+		t.Errorf("expected first message role 'user', got %q", msgs[0].Role)
+	}
+	if msgs[1].Role != "assistant" {
+		t.Errorf("expected second message role 'assistant', got %q", msgs[1].Role)
+	}
+	if msgs[1].Content != "" {
+		t.Errorf("expected empty assistant content, got %q", msgs[1].Content)
 	}
 }
 
