@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Manager provides read/write access to an Obsidian vault rooted at a
@@ -120,6 +123,102 @@ func (m *Manager) ReadIndex() (string, error) {
 // vault-relative path (e.g. "_attachments/doc-20260413-abc123.pdf").
 func (m *Manager) ReadAttachmentData(path string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(m.root, path))
+}
+
+// SearchResult holds a single result from SearchPages.
+type SearchResult struct {
+	Path    string
+	Snippet string
+}
+
+// SearchPages performs a case-insensitive substring search across all .md files
+// in the vault (excluding _attachments/). It returns up to maxResults hits, each
+// with the vault-relative path and a snippet (matching line ± 2 lines, trimmed
+// to 300 chars).
+func (m *Manager) SearchPages(query string, maxResults int) ([]SearchResult, error) {
+	queryLower := strings.ToLower(query)
+	var results []SearchResult
+
+	err := filepath.WalkDir(m.root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// Skip _attachments directory entirely.
+			if d.Name() == "_attachments" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".md") {
+			return nil
+		}
+		if len(results) >= maxResults {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil // skip unreadable files
+		}
+
+		relPath, err := filepath.Rel(m.root, path)
+		if err != nil {
+			return nil
+		}
+		// Normalise to forward slashes.
+		relPath = filepath.ToSlash(relPath)
+
+		lines := splitLines(data)
+		for i, line := range lines {
+			if strings.Contains(strings.ToLower(line), queryLower) {
+				snippet := buildSnippet(lines, i, 2, 300)
+				results = append(results, SearchResult{Path: relPath, Snippet: snippet})
+				if len(results) >= maxResults {
+					return nil
+				}
+				break // one result per file
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// splitLines splits data into a slice of lines without trailing newlines.
+func splitLines(data []byte) []string {
+	var lines []string
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	for sc.Scan() {
+		lines = append(lines, sc.Text())
+	}
+	return lines
+}
+
+// buildSnippet returns lines[i-context : i+context+1] joined by newline,
+// clamped to the slice bounds and trimmed to maxChars.
+func buildSnippet(lines []string, i, context, maxChars int) string {
+	lo := i - context
+	if lo < 0 {
+		lo = 0
+	}
+	hi := i + context + 1
+	if hi > len(lines) {
+		hi = len(lines)
+	}
+	snippet := strings.Join(lines[lo:hi], "\n")
+	if len(snippet) > maxChars {
+		// Trim to maxChars on a rune boundary.
+		runes := []rune(snippet)
+		if len(runes) > maxChars {
+			runes = runes[:maxChars]
+		}
+		snippet = strings.TrimRightFunc(string(runes), unicode.IsSpace)
+	}
+	return snippet
 }
 
 // ReadFile reads a vault-relative .md file and returns its contents.

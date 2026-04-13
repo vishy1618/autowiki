@@ -254,6 +254,76 @@ func TestManager_ReadAttachmentData_ReturnsRawBytes(t *testing.T) {
 	}
 }
 
+// SearchPages
+
+func TestManager_SearchPages_ReturnsMatchingPagesWithSnippets(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "programming/go.md", "line1\nGo interfaces are cool\nline3")
+
+	results, err := m.SearchPages("Go interfaces", 10)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].Path != "programming/go.md" {
+		t.Errorf("want path %q, got %q", "programming/go.md", results[0].Path)
+	}
+	if !strings.Contains(results[0].Snippet, "Go interfaces are cool") {
+		t.Errorf("snippet does not contain matching line: %q", results[0].Snippet)
+	}
+}
+
+func TestManager_SearchPages_IsCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "notes.md", "Go Interfaces Are Cool")
+
+	results, err := m.SearchPages("go interfaces", 10)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+}
+
+func TestManager_SearchPages_RespectsMaxResults(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "a.md", "match here")
+	writeFixture(t, dir, "b.md", "match here")
+	writeFixture(t, dir, "c.md", "match here")
+
+	results, err := m.SearchPages("match", 2)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("want 2 results, got %d", len(results))
+	}
+}
+
+func TestManager_SearchPages_ReturnsEmptyWhenNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "notes.md", "nothing relevant here")
+
+	results, err := m.SearchPages("xyzzy", 10)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("want 0 results, got %d", len(results))
+	}
+}
+
 func TestManager_ReadAttachmentMeta_SidecarStoredNextToFile(t *testing.T) {
 	dir := t.TempDir()
 	m := vault.NewManager(dir)
