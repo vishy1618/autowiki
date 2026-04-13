@@ -12,6 +12,7 @@ import (
 	"github.com/suvish/autowiki/internal/attachment"
 	"github.com/suvish/autowiki/internal/auth"
 	"github.com/suvish/autowiki/internal/chat"
+	"github.com/suvish/autowiki/internal/chatsessions"
 	"github.com/suvish/autowiki/internal/config"
 	"github.com/suvish/autowiki/internal/store"
 	"github.com/suvish/autowiki/internal/vault"
@@ -64,6 +65,8 @@ func (s *Server) routes() {
 	s.mux.Handle("/api/health", mw.Require(http.HandlerFunc(s.handleHealth)))
 	s.mux.Handle("/api/chat", mw.Require(chat.NewHandler(s.chats, s.streamer, s.vault)))
 	s.mux.Handle("/api/attachments", mw.Require(attachment.NewHandler(s.vault, s.describer)))
+	s.mux.Handle("/api/chat-sessions", mw.Require(chatsessions.NewHandler(s.chats)))
+	s.mux.Handle("/api/chat-sessions/", mw.Require(chatsessions.NewHandler(s.chats)))
 
 	// All non-API routes serve the SPA unconditionally. Auth is enforced
 	// client-side; the server only protects /api/* data endpoints.
