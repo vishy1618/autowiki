@@ -741,6 +741,39 @@ func TestHandler_PostChat_BreaksAfterMaxToolCalls(t *testing.T) {
 	}
 }
 
+func TestHandler_PostChat_EmitsStatusEventOnSaveToVault(t *testing.T) {
+	// Arrange
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	cs := store.NewMemChatStore()
+	h := chat.NewHandler(cs, &stubStreamer{body: toolUseAnthropicSSE}, vm)
+
+	form := url.Values{"message": {"I learned about Go interfaces"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — a status event mentioning the page path is emitted before the vault event.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	events := parseSSE(t, w.Body.String())
+	hasStatus := false
+	for _, ev := range events {
+		if ev.event == "status" && strings.Contains(ev.data, "notes/test.md") {
+			hasStatus = true
+			break
+		}
+	}
+	if !hasStatus {
+		t.Errorf("expected status SSE event mentioning vault path, got events: %v", events)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 type sseEvent struct {

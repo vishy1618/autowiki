@@ -179,8 +179,19 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// save_to_vault: execute writes, emit vault event, finish.
+		// save_to_vault: emit status, execute writes, emit vault event, finish.
 		if sr.toolUseName == "save_to_vault" {
+			var saveInput vaultWriteInput
+			if err := json.Unmarshal([]byte(sr.toolJSON), &saveInput); err == nil && len(saveInput.Pages) > 0 {
+				paths := make([]string, len(saveInput.Pages))
+				for i, p := range saveInput.Pages {
+					paths[i] = p.Path
+				}
+				writeSSE(w, "status", fmt.Sprintf(`{"message":"Saving %s\u2026"}`, strings.Join(paths, ", ")))
+				if canFlush {
+					flusher.Flush()
+				}
+			}
 			h.applyVaultWrites(w, session.ID, sr.toolUseID, sr.toolJSON, canFlush, flusher)
 			writeSSE(w, "done", fmt.Sprintf(`{"session_id":%q}`, session.ID))
 			if canFlush {
