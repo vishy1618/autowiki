@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { formatRelative } from "../utils/formatRelative";
 import type { Route } from "./+types/home";
 
 export function meta({}: Route.MetaArgs) {
@@ -27,6 +28,7 @@ interface Message {
   statusMessage?: string;
   vaultChanges?: VaultChange[];
   attachments?: PendingAttachment[];
+  createdAt?: string; // ISO string; absent while streaming
 }
 
 export default function Home() {
@@ -146,9 +148,10 @@ export default function Home() {
     setSending(true);
     inputRef.current?.focus();
 
+    const sentAt = new Date().toISOString();
     setMessages((prev) => [
       ...prev,
-      { role: "user", content: text, attachments: readyAttachments },
+      { role: "user", content: text, attachments: readyAttachments, createdAt: sentAt },
       { role: "assistant", content: "", streaming: true },
     ]);
 
@@ -251,7 +254,7 @@ export default function Home() {
         const next = [...prev];
         const last = next[next.length - 1];
         if (last?.role === "assistant" && last.streaming) {
-          next[next.length - 1] = { ...last, streaming: false };
+          next[next.length - 1] = { ...last, streaming: false, createdAt: new Date().toISOString() };
         }
         return next;
       });
@@ -317,6 +320,14 @@ export default function Home() {
             <span style={styles.roleLabel}>
               {msg.role === "user" ? "You" : "Assistant"}
             </span>
+            {msg.createdAt && (
+              <span
+                style={styles.timestamp}
+                title={new Date(msg.createdAt).toLocaleString()}
+              >
+                {formatRelative(msg.createdAt)}
+              </span>
+            )}
             {msg.role === "user" && msg.attachments && msg.attachments.length > 0 && (
               <div style={styles.attachmentRow}>
                 {msg.attachments.map((att) =>
@@ -669,6 +680,12 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "6px",
     height: "fit-content",
     alignSelf: "flex-end",
+  },
+  timestamp: {
+    display: "block",
+    fontSize: "0.7rem",
+    color: "#aaa",
+    marginBottom: "0.35rem",
   },
   statusLine: {
     display: "block",
