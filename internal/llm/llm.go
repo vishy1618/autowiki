@@ -230,8 +230,9 @@ func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD s
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("anthropic API returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("anthropic API returned %d: %s", resp.StatusCode, string(body))
 	}
 	return resp.Body, nil
 }

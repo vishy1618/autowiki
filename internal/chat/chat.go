@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -100,6 +101,16 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	// Open the SSE stream from the LLM.
 	body, err := h.streamer.Stream(r.Context(), history, indexMD)
 	if err != nil {
+		slog.Error("LLM stream failed", "error", err, "session_id", session.ID)
+		// Persist an empty assistant message so the conversation history
+		// stays properly alternated (user→assistant→user…). Without this,
+		// the next request would send two consecutive user messages and
+		// Anthropic would reject it, making all subsequent chats fail too.
+		_ = h.store.AppendMessage(store.Message{
+			SessionID: session.ID,
+			Role:      "assistant",
+			Content:   "",
+		})
 		http.Error(w, "llm error", http.StatusInternalServerError)
 		return
 	}
