@@ -553,6 +553,194 @@ func TestHandler_PostChat_SendsPdfAttachmentInlineToStreamer(t *testing.T) {
 	}
 }
 
+// ── agentic loop fixtures ─────────────────────────────────────────────────────
+
+// readPageToolUseSSE is a streaming response where the model calls read_page.
+const readPageToolUseSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_rp1","name":"read_page","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"programming/go.md\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+// searchVaultToolUseSSE is a streaming response where the model calls search_vault.
+const searchVaultToolUseSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_sv1","name":"search_vault","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"Go interfaces\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+// multiResponseStreamer returns a different SSE body for each successive call.
+// Once all bodies are consumed it repeats the last one.
+type multiResponseStreamer struct {
+	bodies []string
+	idx    int
+}
+
+func (s *multiResponseStreamer) Stream(_ context.Context, _ []store.Message, _ string, _ []llm.Attachment) (io.ReadCloser, error) {
+	body := s.bodies[len(s.bodies)-1] // default: last body
+	if s.idx < len(s.bodies) {
+		body = s.bodies[s.idx]
+		s.idx++
+	}
+	return io.NopCloser(strings.NewReader(body)), nil
+}
+
+func TestHandler_PostChat_EmitsStatusEventOnReadPage(t *testing.T) {
+	// Arrange — vault has the page the LLM will read.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("programming/go.md", "# Go\nGo has interfaces.")
+
+	cs := store.NewMemChatStore()
+	// First call: model reads a page. Second call: model answers (text only).
+	streamer := &multiResponseStreamer{bodies: []string{readPageToolUseSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"tell me about Go"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — status event with the page path was emitted.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	events := parseSSE(t, w.Body.String())
+	hasStatus := false
+	for _, ev := range events {
+		if ev.event == "status" && strings.Contains(ev.data, "programming/go.md") {
+			hasStatus = true
+			break
+		}
+	}
+	if !hasStatus {
+		t.Errorf("expected status SSE event mentioning page path, got events: %v", events)
+	}
+}
+
+func TestHandler_PostChat_EmitsStatusEventOnSearchVault(t *testing.T) {
+	// Arrange — vault has a searchable page.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("programming/go.md", "Go interfaces are structural.")
+
+	cs := store.NewMemChatStore()
+	// First call: model searches vault. Second call: model answers.
+	streamer := &multiResponseStreamer{bodies: []string{searchVaultToolUseSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"what do I know about Go interfaces?"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — status event emitted for the search.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	events := parseSSE(t, w.Body.String())
+	hasStatus := false
+	for _, ev := range events {
+		if ev.event == "status" && strings.Contains(ev.data, "Go interfaces") {
+			hasStatus = true
+			break
+		}
+	}
+	if !hasStatus {
+		t.Errorf("expected status SSE event mentioning search query, got events: %v", events)
+	}
+}
+
+func TestHandler_PostChat_LoopsUntilNoToolCall(t *testing.T) {
+	// Arrange — model reads a page then answers without a tool call.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("notes.md", "some notes")
+
+	cs := store.NewMemChatStore()
+	streamer := &multiResponseStreamer{bodies: []string{readPageToolUseSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"what are my notes?"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — handler completed normally with a done event.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	events := parseSSE(t, w.Body.String())
+	if len(events) == 0 || events[len(events)-1].event != "done" {
+		t.Errorf("expected last event to be done, got: %v", events)
+	}
+}
+
+func TestHandler_PostChat_BreaksAfterMaxToolCalls(t *testing.T) {
+	// Arrange — model always calls read_page; loop should cap at 15 and emit error.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("programming/go.md", "Go notes")
+
+	cs := store.NewMemChatStore()
+	// Always returns a read_page tool call → triggers the cap.
+	streamer := &multiResponseStreamer{bodies: []string{readPageToolUseSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"keep reading"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — an error SSE event must have been emitted.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (SSE headers already sent), got %d", w.Code)
+	}
+	events := parseSSE(t, w.Body.String())
+	hasError := false
+	for _, ev := range events {
+		if ev.event == "error" {
+			hasError = true
+			break
+		}
+	}
+	if !hasError {
+		t.Errorf("expected error SSE event after max tool calls, got: %v", events)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 type sseEvent struct {
