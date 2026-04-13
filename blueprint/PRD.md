@@ -47,6 +47,7 @@ Each story follows the INVEST principle: Independent, Negotiable, Valuable, Esti
 | [US-10](./user-stories/US-10.md) | See what was stored | Vault Maintenance |
 | [US-11](./user-stories/US-11.md) | Overnight wiki consolidation | Vault Maintenance |
 | [US-12](./user-stories/US-12.md) | Check dream state history | Vault Maintenance |
+| [US-13](./user-stories/US-13.md) | Sliding session expiry | Auth |
 
 ---
 
