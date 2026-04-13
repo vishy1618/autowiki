@@ -107,6 +107,10 @@ type toolResultContent struct {
 	IsError   bool   `json:"is_error"`
 }
 
+// describeDocumentPrompt is sent with a PDF document so the LLM produces a
+// concise summary suitable for injecting into the conversation context.
+const describeDocumentPrompt = "Summarise this document concisely in 2–4 sentences. Focus on the key information it contains, suitable for indexing in a personal knowledge base."
+
 // describeImagePrompt is sent with the image so the LLM produces a concise
 // description suitable for knowledge indexing.
 const describeImagePrompt = "Describe this image concisely in 1–3 sentences. Focus on the key information it conveys, suitable for indexing in a personal knowledge base."
@@ -155,6 +159,74 @@ func (c *Client) DescribeImage(ctx context.Context, data []byte, mediaType strin
 					map[string]any{
 						"type": "text",
 						"text": describeImagePrompt,
+					},
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshalling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.cfg.BaseURL+messagesPath, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.cfg.APIKey)
+	req.Header.Set("anthropic-version", anthropicVersion)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("anthropic API returned %d", resp.StatusCode)
+	}
+
+	var result describeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding response: %w", err)
+	}
+	for _, block := range result.Content {
+		if block.Type == "text" {
+			return block.Text, nil
+		}
+	}
+	return "", nil
+}
+
+// DescribeDocument sends a PDF to the Anthropic API and returns a concise
+// summary. mediaType should be "application/pdf".
+func (c *Client) DescribeDocument(ctx context.Context, data []byte, mediaType string) (string, error) {
+	encoded := base64.StdEncoding.EncodeToString(data)
+
+	reqBody := describeRequest{
+		Model:     c.cfg.Model,
+		MaxTokens: 512,
+		Messages: []struct {
+			Role    string `json:"role"`
+			Content []any  `json:"content"`
+		}{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type": "document",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": mediaType,
+							"data":       encoded,
+						},
+					},
+					map[string]any{
+						"type": "text",
+						"text": describeDocumentPrompt,
 					},
 				},
 			},

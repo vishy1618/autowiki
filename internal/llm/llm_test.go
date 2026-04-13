@@ -181,6 +181,73 @@ func TestClient_DescribeImage_ReturnsErrorOnNon200(t *testing.T) {
 	}
 }
 
+func TestClient_DescribeDocument_SendsBase64PdfAndReturnsDescription(t *testing.T) {
+	// Arrange — stub server validates document request shape and returns a summary.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content []struct {
+					Type   string `json:"type"`
+					Source *struct {
+						Type      string `json:"type"`
+						MediaType string `json:"media_type"`
+						Data      string `json:"data"`
+					} `json:"source,omitempty"`
+					Text string `json:"text,omitempty"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if len(body.Messages) == 0 {
+			t.Error("expected at least one message")
+		}
+		content := body.Messages[0].Content
+		hasDocument := false
+		for _, block := range content {
+			if block.Type == "document" && block.Source != nil &&
+				block.Source.Type == "base64" && block.Source.MediaType == "application/pdf" {
+				hasDocument = true
+			}
+		}
+		if !hasDocument {
+			t.Error("expected document content block with base64 source and application/pdf media type")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"content":[{"type":"text","text":"a two-page guide on Go interfaces"}],"stop_reason":"end_turn"}`)
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+
+	desc, err := client.DescribeDocument(t.Context(), []byte("%PDF-fake"), "application/pdf")
+
+	if err != nil {
+		t.Fatalf("DescribeDocument: %v", err)
+	}
+	if desc != "a two-page guide on Go interfaces" {
+		t.Errorf("want description %q, got %q", "a two-page guide on Go interfaces", desc)
+	}
+}
+
+func TestClient_DescribeDocument_ReturnsErrorOnNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"type":"authentication_error"}}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "bad-key", BaseURL: srv.URL})
+
+	_, err := client.DescribeDocument(t.Context(), []byte("%PDF-fake"), "application/pdf")
+
+	if err == nil {
+		t.Fatal("expected error on 401 response, got nil")
+	}
+}
+
 func TestClient_Stream_ReturnsErrorOnNon200(t *testing.T) {
 	// Arrange
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

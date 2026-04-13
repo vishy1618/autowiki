@@ -17,7 +17,12 @@ import (
 // Defined here to avoid import cycles and enable stubbing in tests.
 type Describer interface {
 	DescribeImage(ctx context.Context, data []byte, mediaType string) (string, error)
+	DescribeDocument(ctx context.Context, data []byte, mediaType string) (string, error)
 }
+
+// maxPDFDescribeBytes is the largest PDF we will send to the LLM for description.
+// PDFs larger than this are saved normally but get a "too large" sidecar note.
+const maxPDFDescribeBytes = 5_000_000
 
 // Handler handles attachment upload requests.
 type Handler struct {
@@ -91,10 +96,17 @@ func (h *Handler) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate description for images only.
+	// Generate description based on file type.
 	var description string
-	if strings.HasPrefix(mediaType, "image/") {
+	switch {
+	case strings.HasPrefix(mediaType, "image/"):
 		description, _ = h.describer.DescribeImage(r.Context(), data, mediaType)
+	case mediaType == "application/pdf":
+		if len(data) <= maxPDFDescribeBytes {
+			description, _ = h.describer.DescribeDocument(r.Context(), data, mediaType)
+		} else {
+			description = "[PDF too large to process]"
+		}
 	}
 
 	// Generate a short ID from the path.
