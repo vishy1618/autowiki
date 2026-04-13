@@ -527,6 +527,72 @@ func TestClient_Stream_IncludesSearchVaultTool(t *testing.T) {
 	body.Close()
 }
 
+func TestClient_Stream_DoesNotInjectPdfIntoToolResultMessage(t *testing.T) {
+	// When the last message in history is a tool_result (appears as a user
+	// message with structured content blocks), PDF attachments must NOT be
+	// prepended. Doing so would corrupt the tool_result block and cause Anthropic
+	// to return 400: tool_use without a corresponding tool_result.
+	var capturedMessages []json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		capturedMessages = body.Messages
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+
+	// History ending in a tool_result (as produced by the agentic loop after
+	// a read_page call).
+	messages := []store.Message{
+		{Role: "user", Content: "summarise this PDF"},
+		{Role: "assistant", Content: `[{"type":"tool_use","id":"toolu_rp1","name":"read_page","input":{"path":"notes.md"}}]`},
+		{Role: "tool_result", Content: `{"tool_use_id":"toolu_rp1","content":"# Notes","is_error":false}`},
+	}
+	attachments := []llm.Attachment{
+		{MediaType: "application/pdf", Data: []byte("%PDF-1.4 fake")},
+	}
+
+	body, err := client.Stream(t.Context(), messages, "", attachments)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+
+	// The last API message must be a user message whose FIRST block is the
+	// tool_result, not a document block.
+	if len(capturedMessages) == 0 {
+		t.Fatal("expected at least one captured message")
+	}
+	last := capturedMessages[len(capturedMessages)-1]
+	var lastMsg struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Type      string `json:"type"`
+			ToolUseID string `json:"tool_use_id,omitempty"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(last, &lastMsg); err != nil {
+		t.Fatalf("unmarshalling last message: %v", err)
+	}
+	if lastMsg.Role != "user" {
+		t.Fatalf("expected last message role 'user', got %q", lastMsg.Role)
+	}
+	if len(lastMsg.Content) == 0 {
+		t.Fatal("expected at least one content block in last message")
+	}
+	if lastMsg.Content[0].Type != "tool_result" {
+		t.Errorf("expected first content block to be tool_result, got %q — PDF was injected into tool_result message", lastMsg.Content[0].Type)
+	}
+}
+
 func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
 	// Arrange — capture the system prompt the client sends.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

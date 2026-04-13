@@ -316,25 +316,31 @@ func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD s
 
 	// Prepend document content blocks for any PDF attachments to the last
 	// user message so the LLM receives the full document inline.
+	// Only inject into plain-text messages (string content). Structured
+	// messages already containing content blocks (e.g. tool_result blocks
+	// produced by the agentic loop) must not be modified — mixing document
+	// blocks with tool_result blocks violates Anthropic's requirement that a
+	// tool_result immediately follows its corresponding tool_use.
 	if len(attachments) > 0 && len(reqMsgs) > 0 {
 		last := &reqMsgs[len(reqMsgs)-1]
 		if last.Role == "user" {
-			var blocks []any
-			for _, att := range attachments {
-				blocks = append(blocks, map[string]any{
-					"type": "document",
-					"source": map[string]any{
-						"type":       "base64",
-						"media_type": att.MediaType,
-						"data":       base64.StdEncoding.EncodeToString(att.Data),
-					},
-				})
+			if text, ok := last.Content.(string); ok {
+				var blocks []any
+				for _, att := range attachments {
+					blocks = append(blocks, map[string]any{
+						"type": "document",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": att.MediaType,
+							"data":       base64.StdEncoding.EncodeToString(att.Data),
+						},
+					})
+				}
+				if text != "" {
+					blocks = append(blocks, map[string]any{"type": "text", "text": text})
+				}
+				last.Content = blocks
 			}
-			// Append the original text content as a text block after the documents.
-			if text, ok := last.Content.(string); ok && text != "" {
-				blocks = append(blocks, map[string]any{"type": "text", "text": text})
-			}
-			last.Content = blocks
 		}
 	}
 
