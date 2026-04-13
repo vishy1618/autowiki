@@ -33,6 +33,10 @@ type ChatStore interface {
 
 	// ListMessages returns all messages for a session in insertion order.
 	ListMessages(sessionID string) ([]Message, error)
+
+	// ListSessions returns sessions newest-first. limit caps the count;
+	// offset skips the first N sessions (for pagination).
+	ListSessions(limit, offset int) ([]ChatSession, error)
 }
 
 // Session holds an authenticated user session.

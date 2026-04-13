@@ -146,6 +146,89 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 		}
 	})
 
+	t.Run("ListSessions_WhenEmpty_ReturnsEmptySlice", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+
+		sessions, err := cs.ListSessions(10, 0)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sessions) != 0 {
+			t.Errorf("expected 0 sessions, got %d", len(sessions))
+		}
+	})
+
+	t.Run("ListSessions_ReturnsNewestFirst", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		// Create two sessions by forcing a timeout between them.
+		first, _ := cs.ResolveSession()
+		stale := first
+		stale.LastActiveAt = time.Now().Add(-31 * time.Minute)
+		_ = cs.UpdateSession(stale)
+		second, _ := cs.ResolveSession()
+
+		sessions, err := cs.ListSessions(10, 0)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sessions) != 2 {
+			t.Fatalf("expected 2 sessions, got %d", len(sessions))
+		}
+		if sessions[0].ID != second.ID {
+			t.Errorf("expected newest session first, got %q", sessions[0].ID)
+		}
+		if sessions[1].ID != first.ID {
+			t.Errorf("expected oldest session second, got %q", sessions[1].ID)
+		}
+	})
+
+	t.Run("ListSessions_RespectsLimit", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		// Create 3 sessions.
+		for i := 0; i < 3; i++ {
+			s, _ := cs.ResolveSession()
+			stale := s
+			stale.LastActiveAt = time.Now().Add(-31 * time.Minute)
+			_ = cs.UpdateSession(stale)
+		}
+
+		sessions, err := cs.ListSessions(2, 0)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sessions) != 2 {
+			t.Errorf("expected 2 sessions, got %d", len(sessions))
+		}
+	})
+
+	t.Run("ListSessions_RespectsOffset", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		// Create 3 sessions; track their IDs newest→oldest.
+		var ids []string
+		for i := 0; i < 3; i++ {
+			s, _ := cs.ResolveSession()
+			ids = append([]string{s.ID}, ids...) // prepend = newest first
+			stale := s
+			stale.LastActiveAt = time.Now().Add(-31 * time.Minute)
+			_ = cs.UpdateSession(stale)
+		}
+
+		sessions, err := cs.ListSessions(10, 1)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(sessions) != 2 {
+			t.Fatalf("expected 2 sessions after offset 1, got %d", len(sessions))
+		}
+		if sessions[0].ID != ids[1] {
+			t.Errorf("expected second-newest session first after offset, got %q", sessions[0].ID)
+		}
+	})
+
 	t.Run("ListMessages_WhenSessionUnknown_ReturnsEmpty", func(t *testing.T) {
 		// Act
 		msgs, err := cs.ListMessages("nonexistent-session")

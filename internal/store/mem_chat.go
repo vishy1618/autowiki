@@ -73,6 +73,22 @@ func (m *MemChatStore) AppendMessage(msg Message) error {
 	return nil
 }
 
+func (m *MemChatStore) ListSessions(limit, offset int) ([]ChatSession, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Sessions are stored oldest→newest; reverse for newest-first.
+	n := len(m.sessions)
+	var out []ChatSession
+	for i := n - 1 - offset; i >= 0 && len(out) < limit; i-- {
+		out = append(out, m.sessions[i])
+	}
+	if out == nil {
+		out = []ChatSession{}
+	}
+	return out, nil
+}
+
 func (m *MemChatStore) ListMessages(sessionID string) ([]Message, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

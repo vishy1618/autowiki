@@ -154,6 +154,33 @@ func (p *PebbleChatStore) AppendMessage(msg Message) error {
 	return p.setJSON(msgsKey, msgIDs)
 }
 
+func (p *PebbleChatStore) ListSessions(limit, offset int) ([]ChatSession, error) {
+	ids, err := p.loadSessionList()
+	if err != nil {
+		return nil, err
+	}
+	// ids is newest-first; apply offset and limit.
+	if offset >= len(ids) {
+		return []ChatSession{}, nil
+	}
+	ids = ids[offset:]
+	if limit < len(ids) {
+		ids = ids[:limit]
+	}
+	out := make([]ChatSession, 0, len(ids))
+	for _, id := range ids {
+		var s ChatSession
+		found, err := p.getJSON(sessionMetaKey(id), &s)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 func (p *PebbleChatStore) ListMessages(sessionID string) ([]Message, error) {
 	var msgIDs []string
 	found, err := p.getJSON(sessionMsgsKey(sessionID), &msgIDs)
