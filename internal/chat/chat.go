@@ -60,10 +60,10 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 			if meta.Description != "" {
 				contextLines = append(contextLines,
-					fmt.Sprintf("[Attached: %s — %s]", meta.OriginalName, meta.Description))
+					fmt.Sprintf("[Attached: %s (vault path: %s) — %s]", meta.OriginalName, id, meta.Description))
 			} else {
 				contextLines = append(contextLines,
-					fmt.Sprintf("[Attached: %s]", meta.OriginalName))
+					fmt.Sprintf("[Attached: %s (vault path: %s)]", meta.OriginalName, id))
 			}
 		}
 		if len(contextLines) > 0 {

@@ -265,17 +265,21 @@ func TestHandler_PostChat_InjectsAttachmentDescriptionIntoContext(t *testing.T) 
 	// Act
 	h.ServeHTTP(w, req)
 
-	// Assert — the streamer must have received the attachment description in
-	// the message history sent to the LLM.
-	found := false
+	// Assert — the streamer must have received both the description AND the
+	// vault-relative path in the message sent to the LLM, so it can embed
+	// the image using Obsidian ![[path]] syntax when saving to the vault.
+	var userContent string
 	for _, msg := range streamer.capturedMsgs {
-		if strings.Contains(msg.Content, "a sunset over mountains") {
-			found = true
+		if msg.Role == "user" {
+			userContent = msg.Content
 			break
 		}
 	}
-	if !found {
-		t.Errorf("expected attachment description in LLM context; messages: %v", streamer.capturedMsgs)
+	if !strings.Contains(userContent, "a sunset over mountains") {
+		t.Errorf("expected attachment description in LLM context; user message: %q", userContent)
+	}
+	if !strings.Contains(userContent, attachPath) {
+		t.Errorf("expected vault path %q in LLM context; user message: %q", attachPath, userContent)
 	}
 }
 
