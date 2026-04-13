@@ -66,8 +66,41 @@ Whenever you call save_to_vault, always include an updated index.md as one of th
 
 Do not mention Claude, Anthropic, or any underlying model. You are autowiki.`
 
-// toolDefinition is the save_to_vault tool schema sent in every request.
-var toolDefinition = map[string]any{
+// toolDefinitions contains all tool schemas sent in every request.
+var toolDefinitions = []any{
+	readPageToolDefinition,
+	searchVaultToolDefinition,
+	saveToVaultToolDefinition,
+}
+
+// readPageToolDefinition allows the LLM to fetch the full content of a vault page.
+var readPageToolDefinition = map[string]any{
+	"name":        "read_page",
+	"description": "Fetch the full content of a specific vault page by its vault-relative path (e.g. 'programming/go.md'). Use the vault index in the system prompt to decide which page to read.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string", "description": "Vault-relative path to the page, e.g. 'programming/go.md'"},
+		},
+		"required": []string{"path"},
+	},
+}
+
+// searchVaultToolDefinition allows the LLM to keyword-search across all vault pages.
+var searchVaultToolDefinition = map[string]any{
+	"name":        "search_vault",
+	"description": "Keyword search across all vault markdown files. Returns up to 10 results, each with the page path and a snippet of the matching text.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{"type": "string", "description": "Search query string"},
+		},
+		"required": []string{"query"},
+	},
+}
+
+// saveToVaultToolDefinition is the save_to_vault tool schema sent in every request.
+var saveToVaultToolDefinition = map[string]any{
 	"name":        "save_to_vault",
 	"description": "Save knowledge to the user's personal vault. Call this when the conversation contains information worth preserving. Each page should be a focused topic; use nested paths (e.g. 'programming/go.md') to organise by subject.",
 	"input_schema": map[string]any{
@@ -316,7 +349,7 @@ func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD s
 		Stream:    true,
 		System:    system,
 		Messages:  reqMsgs,
-		Tools:     []any{toolDefinition},
+		Tools:     toolDefinitions,
 		ToolChoice: map[string]any{
 			"type": "auto",
 		},
