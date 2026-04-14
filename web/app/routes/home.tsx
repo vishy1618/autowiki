@@ -97,13 +97,18 @@ export default function Home() {
         const mr = await fetch(`/api/chat-sessions/${session.id}`);
         if (!mr.ok) continue;
         const { messages: msgs } = await mr.json() as {
-          messages: Array<{ id: string; role: "user" | "assistant"; content: string; created_at: string }>;
+          messages: Array<{ id: string; role: "user" | "assistant"; content: string; created_at: string; vault_changes?: string[] }>;
         };
         if (i > 0 || prepend) {
           items.push({ kind: "divider", id: `divider-${session.id}` });
         }
         for (const msg of msgs) {
-          items.push({ role: msg.role, content: msg.content, createdAt: msg.created_at });
+          items.push({
+            role: msg.role,
+            content: msg.content,
+            createdAt: msg.created_at,
+            vaultChanges: msg.vault_changes?.map((path) => ({ path })),
+          });
         }
       }
       if (prepend) {

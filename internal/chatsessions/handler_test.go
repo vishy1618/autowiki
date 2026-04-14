@@ -153,6 +153,58 @@ func TestHandler_GetSession_ReturnsJSONContentType(t *testing.T) {
 	}
 }
 
+func TestHandler_GetSession_IncludesVaultChangesOnAssistantMessage(t *testing.T) {
+	cs := store.NewMemChatStore()
+	session, err := cs.ResolveSession()
+	if err != nil {
+		t.Fatalf("ResolveSession: %v", err)
+	}
+	// Assistant message with text + save_to_vault tool_use block.
+	content := `[{"type":"text","text":"Saved it."},{"type":"tool_use","id":"tu_1","name":"save_to_vault","input":{"pages":[{"path":"notes/go.md","content":"..."},{"path":"notes/concurrency.md","content":"..."}]}}]`
+	for _, m := range []store.Message{
+		{SessionID: session.ID, Role: "user", Content: "save this", CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "assistant", Content: content, CreatedAt: time.Now()},
+	} {
+		if err := cs.AppendMessage(m); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+	}
+
+	h := newHandler(t, cs)
+	req := httptest.NewRequest(http.MethodGet, "/api/chat-sessions/"+session.ID, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Messages []struct {
+			Role         string   `json:"role"`
+			Content      string   `json:"content"`
+			VaultChanges []string `json:"vault_changes"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(resp.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(resp.Messages))
+	}
+	assistant := resp.Messages[1]
+	if assistant.Content != "Saved it." {
+		t.Errorf("expected plain text content, got %q", assistant.Content)
+	}
+	if len(assistant.VaultChanges) != 2 {
+		t.Errorf("expected 2 vault_changes, got %d: %v", len(assistant.VaultChanges), assistant.VaultChanges)
+	}
+	if len(assistant.VaultChanges) == 2 {
+		if assistant.VaultChanges[0] != "notes/go.md" || assistant.VaultChanges[1] != "notes/concurrency.md" {
+			t.Errorf("unexpected vault_changes: %v", assistant.VaultChanges)
+		}
+	}
+}
+
 func TestHandler_GetSession_OmitsToolResultMessages(t *testing.T) {
 	cs := store.NewMemChatStore()
 	session, err := cs.ResolveSession()

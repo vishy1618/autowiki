@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/suvish/autowiki/internal/store"
 )
@@ -35,6 +36,16 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"sessions": sessions})
+}
+
+// messageResponse is the API representation of a single message.
+type messageResponse struct {
+	ID           string    `json:"id"`
+	SessionID    string    `json:"session_id"`
+	Role         string    `json:"role"`
+	Content      string    `json:"content"`
+	CreatedAt    time.Time `json:"created_at"`
+	VaultChanges []string  `json:"vault_changes,omitempty"`
 }
 
 func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -70,44 +81,68 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 
 // sanitiseMessages filters internal LLM scaffolding messages and normalises
 // assistant content-block arrays down to plain text before sending to clients.
-func sanitiseMessages(msgs []store.Message) []store.Message {
-	out := make([]store.Message, 0, len(msgs))
+func sanitiseMessages(msgs []store.Message) []messageResponse {
+	out := make([]messageResponse, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Role == "tool_result" || m.Role == "tool_use" {
 			continue
 		}
+		resp := messageResponse{
+			ID:        m.ID,
+			SessionID: m.SessionID,
+			Role:      m.Role,
+			Content:   m.Content,
+			CreatedAt: m.CreatedAt,
+		}
 		if m.Role == "assistant" {
-			m.Content = extractAssistantText(m.Content)
-			if m.Content == "" {
+			text, vaultPaths := parseAssistantContent(m.Content)
+			if text == "" {
 				continue // tool-only assistant turn — nothing to display
 			}
+			resp.Content = text
+			resp.VaultChanges = vaultPaths
 		}
-		out = append(out, m)
+		out = append(out, resp)
 	}
 	return out
 }
 
-// extractAssistantText returns the concatenated text from a JSON content-block
-// array, or the original string if it is not a content-block array.
-// Returns "" when the array contains no text blocks (tool-only turn).
-func extractAssistantText(content string) string {
+// parseAssistantContent parses a stored assistant content value.
+// If it is a JSON content-block array, it returns the concatenated text and
+// any page paths written by a save_to_vault tool_use block.
+// Returns ("", nil) for tool-only turns (no text block present).
+func parseAssistantContent(content string) (string, []string) {
 	if len(content) == 0 || content[0] != '[' {
-		return content
+		return content, nil
 	}
 	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type  string `json:"type"`
+		Text  string `json:"text"`
+		Name  string `json:"name"`
+		Input struct {
+			Pages []struct {
+				Path string `json:"path"`
+			} `json:"pages"`
+		} `json:"input"`
 	}
 	if err := json.Unmarshal([]byte(content), &blocks); err != nil {
-		return content
+		return content, nil
 	}
 	var sb strings.Builder
+	var vaultPaths []string
 	for _, b := range blocks {
-		if b.Type == "text" {
+		switch b.Type {
+		case "text":
 			sb.WriteString(b.Text)
+		case "tool_use":
+			if b.Name == "save_to_vault" {
+				for _, p := range b.Input.Pages {
+					vaultPaths = append(vaultPaths, p.Path)
+				}
+			}
 		}
 	}
-	return sb.String()
+	return sb.String(), vaultPaths
 }
 
 func queryInt(r *http.Request, key string, def int) int {
