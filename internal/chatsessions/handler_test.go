@@ -205,6 +205,59 @@ func TestHandler_GetSession_IncludesVaultChangesOnAssistantMessage(t *testing.T)
 	}
 }
 
+func TestHandler_GetSession_KeepsVaultOnlyAssistantMessageWithNoText(t *testing.T) {
+	// When the LLM goes straight to save_to_vault with no preamble, the stored
+	// assistant content has only a tool_use block and no text block. The message
+	// should still appear in the response so the frontend can show the vault summary.
+	cs := store.NewMemChatStore()
+	session, err := cs.ResolveSession()
+	if err != nil {
+		t.Fatalf("ResolveSession: %v", err)
+	}
+	toolOnlyVault := `[{"type":"tool_use","id":"tu_1","name":"save_to_vault","input":{"pages":[{"path":"notes/go.md","content":"Go notes"}]}}]`
+	for _, m := range []store.Message{
+		{SessionID: session.ID, Role: "user", Content: "save go notes", CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "assistant", Content: toolOnlyVault, CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "tool_result", Content: `{"tool_use_id":"tu_1","content":"saved: notes/go.md"}`, CreatedAt: time.Now()},
+	} {
+		if err := cs.AppendMessage(m); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+	}
+
+	h := newHandler(t, cs)
+	req := httptest.NewRequest(http.MethodGet, "/api/chat-sessions/"+session.ID, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Messages []struct {
+			Role         string   `json:"role"`
+			Content      string   `json:"content"`
+			VaultChanges []string `json:"vault_changes"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	// Expect user + assistant (vault-only, no text but has vault_changes).
+	if len(resp.Messages) != 2 {
+		t.Errorf("expected 2 messages, got %d: %+v", len(resp.Messages), resp.Messages)
+	}
+	if len(resp.Messages) == 2 {
+		assistant := resp.Messages[1]
+		if assistant.Content != "" {
+			t.Errorf("expected empty content for vault-only turn, got %q", assistant.Content)
+		}
+		if len(assistant.VaultChanges) != 1 || assistant.VaultChanges[0] != "notes/go.md" {
+			t.Errorf("expected vault_changes [notes/go.md], got %v", assistant.VaultChanges)
+		}
+	}
+}
+
 func TestHandler_GetSession_OmitsToolResultMessages(t *testing.T) {
 	cs := store.NewMemChatStore()
 	session, err := cs.ResolveSession()

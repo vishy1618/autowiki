@@ -96,8 +96,8 @@ func sanitiseMessages(msgs []store.Message) []messageResponse {
 		}
 		if m.Role == "assistant" {
 			text, vaultPaths := parseAssistantContent(m.Content)
-			if text == "" {
-				continue // tool-only assistant turn — nothing to display
+			if text == "" && len(vaultPaths) == 0 {
+				continue // pure retrieval tool turn — nothing to display
 			}
 			resp.Content = text
 			resp.VaultChanges = vaultPaths
