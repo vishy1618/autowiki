@@ -233,6 +233,49 @@ func TestHandler_GetSession_ExtractsTextFromAssistantToolUseContent(t *testing.T
 	}
 }
 
+func TestHandler_GetSession_OmitsToolOnlyAssistantMessages(t *testing.T) {
+	cs := store.NewMemChatStore()
+	session, err := cs.ResolveSession()
+	if err != nil {
+		t.Fatalf("ResolveSession: %v", err)
+	}
+	// Assistant message that is a pure tool_use block with no text — happens
+	// when the model decides to call a tool without any preamble.
+	toolOnlyContent := `[{"id":"toolu_01","input":{"query":"storage"},"name":"search_vault","type":"tool_use"}]`
+	for _, m := range []store.Message{
+		{SessionID: session.ID, Role: "user", Content: "find storage info", CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "assistant", Content: toolOnlyContent, CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "tool_result", Content: `{"tool_use_id":"toolu_01","content":"[]"}`, CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "assistant", Content: "Here is what I found.", CreatedAt: time.Now()},
+	} {
+		if err := cs.AppendMessage(m); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+	}
+
+	h := newHandler(t, cs)
+	req := httptest.NewRequest(http.MethodGet, "/api/chat-sessions/"+session.ID, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Messages []store.Message `json:"messages"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	// Expect only user + final assistant text; tool-only assistant and tool_result filtered.
+	if len(resp.Messages) != 2 {
+		t.Errorf("expected 2 messages, got %d: %+v", len(resp.Messages), resp.Messages)
+	}
+	if len(resp.Messages) == 2 && resp.Messages[1].Content != "Here is what I found." {
+		t.Errorf("expected final assistant text, got: %q", resp.Messages[1].Content)
+	}
+}
+
 func TestHandler_GetSession_AssistantPlainTextContentUnchanged(t *testing.T) {
 	cs := store.NewMemChatStore()
 	session := seedSession(t, cs, "hello")

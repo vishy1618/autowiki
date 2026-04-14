@@ -78,6 +78,9 @@ func sanitiseMessages(msgs []store.Message) []store.Message {
 		}
 		if m.Role == "assistant" {
 			m.Content = extractAssistantText(m.Content)
+			if m.Content == "" {
+				continue // tool-only assistant turn — nothing to display
+			}
 		}
 		out = append(out, m)
 	}
@@ -86,6 +89,7 @@ func sanitiseMessages(msgs []store.Message) []store.Message {
 
 // extractAssistantText returns the concatenated text from a JSON content-block
 // array, or the original string if it is not a content-block array.
+// Returns "" when the array contains no text blocks (tool-only turn).
 func extractAssistantText(content string) string {
 	if len(content) == 0 || content[0] != '[' {
 		return content
@@ -102,9 +106,6 @@ func extractAssistantText(content string) string {
 		if b.Type == "text" {
 			sb.WriteString(b.Text)
 		}
-	}
-	if sb.Len() == 0 {
-		return content
 	}
 	return sb.String()
 }
