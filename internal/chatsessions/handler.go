@@ -65,7 +65,48 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"messages": msgs})
+	json.NewEncoder(w).Encode(map[string]any{"messages": sanitiseMessages(msgs)})
+}
+
+// sanitiseMessages filters internal LLM scaffolding messages and normalises
+// assistant content-block arrays down to plain text before sending to clients.
+func sanitiseMessages(msgs []store.Message) []store.Message {
+	out := make([]store.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "tool_result" || m.Role == "tool_use" {
+			continue
+		}
+		if m.Role == "assistant" {
+			m.Content = extractAssistantText(m.Content)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// extractAssistantText returns the concatenated text from a JSON content-block
+// array, or the original string if it is not a content-block array.
+func extractAssistantText(content string) string {
+	if len(content) == 0 || content[0] != '[' {
+		return content
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(content), &blocks); err != nil {
+		return content
+	}
+	var sb strings.Builder
+	for _, b := range blocks {
+		if b.Type == "text" {
+			sb.WriteString(b.Text)
+		}
+	}
+	if sb.Len() == 0 {
+		return content
+	}
+	return sb.String()
 }
 
 func queryInt(r *http.Request, key string, def int) int {

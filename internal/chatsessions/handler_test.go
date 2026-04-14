@@ -153,6 +153,115 @@ func TestHandler_GetSession_ReturnsJSONContentType(t *testing.T) {
 	}
 }
 
+func TestHandler_GetSession_OmitsToolResultMessages(t *testing.T) {
+	cs := store.NewMemChatStore()
+	session, err := cs.ResolveSession()
+	if err != nil {
+		t.Fatalf("ResolveSession: %v", err)
+	}
+	for _, m := range []store.Message{
+		{SessionID: session.ID, Role: "user", Content: "save something", CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "assistant", Content: "sure", CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "tool_result", Content: `{"tool_use_id":"x","content":"ok"}`, CreatedAt: time.Now()},
+	} {
+		if err := cs.AppendMessage(m); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+	}
+
+	h := newHandler(t, cs)
+	req := httptest.NewRequest(http.MethodGet, "/api/chat-sessions/"+session.ID, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Messages []store.Message `json:"messages"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	for _, m := range resp.Messages {
+		if m.Role == "tool_result" {
+			t.Errorf("tool_result message should be filtered out, got: %+v", m)
+		}
+	}
+	if len(resp.Messages) != 2 {
+		t.Errorf("expected 2 messages (user + assistant), got %d", len(resp.Messages))
+	}
+}
+
+func TestHandler_GetSession_ExtractsTextFromAssistantToolUseContent(t *testing.T) {
+	cs := store.NewMemChatStore()
+	session, err := cs.ResolveSession()
+	if err != nil {
+		t.Fatalf("ResolveSession: %v", err)
+	}
+	// Assistant message whose content is a JSON content-block array (text + tool_use).
+	toolUseContent := `[{"type":"text","text":"I will save that now."},{"type":"tool_use","id":"tu_1","name":"save_to_vault","input":{"pages":[]}}]`
+	for _, m := range []store.Message{
+		{SessionID: session.ID, Role: "user", Content: "save this", CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "assistant", Content: toolUseContent, CreatedAt: time.Now()},
+	} {
+		if err := cs.AppendMessage(m); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+	}
+
+	h := newHandler(t, cs)
+	req := httptest.NewRequest(http.MethodGet, "/api/chat-sessions/"+session.ID, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Messages []store.Message `json:"messages"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(resp.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(resp.Messages))
+	}
+	assistantMsg := resp.Messages[1]
+	if assistantMsg.Content != "I will save that now." {
+		t.Errorf("expected plain text content, got: %q", assistantMsg.Content)
+	}
+}
+
+func TestHandler_GetSession_AssistantPlainTextContentUnchanged(t *testing.T) {
+	cs := store.NewMemChatStore()
+	session := seedSession(t, cs, "hello")
+	if err := cs.AppendMessage(store.Message{
+		SessionID: session.ID,
+		Role:      "assistant",
+		Content:   "world",
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	h := newHandler(t, cs)
+	req := httptest.NewRequest(http.MethodGet, "/api/chat-sessions/"+session.ID, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	var resp struct {
+		Messages []store.Message `json:"messages"`
+	}
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if len(resp.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(resp.Messages))
+	}
+	if resp.Messages[1].Content != "world" {
+		t.Errorf("plain assistant content should be unchanged, got: %q", resp.Messages[1].Content)
+	}
+}
+
 func TestHandler_ListSessions_ReturnsSessionsNewestFirst(t *testing.T) {
 	// Arrange
 	cs := store.NewMemChatStore()
