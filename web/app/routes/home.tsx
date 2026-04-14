@@ -22,6 +22,7 @@ interface PendingAttachment {
 }
 
 interface Message {
+  kind?: "message";
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
@@ -31,18 +32,29 @@ interface Message {
   createdAt?: string; // ISO string; absent while streaming
 }
 
+interface SessionDivider {
+  kind: "divider";
+  id: string;
+}
+
+type ChatItem = Message | SessionDivider;
+
 export default function Home() {
   const navigate = useNavigate();
   const [ready, setReady] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -63,9 +75,72 @@ export default function Home() {
     if (ready) inputRef.current?.focus();
   }, [ready]);
 
+  const HISTORY_LIMIT = 3;
+
+  async function loadHistory(offset: number, prepend: boolean) {
+    setHistoryLoading(true);
+    try {
+      const r = await fetch(`/api/chat-sessions?limit=${HISTORY_LIMIT}&offset=${offset}`);
+      if (!r.ok) return;
+      const { sessions } = await r.json() as {
+        sessions: Array<{ id: string; created_at: string; last_active_at: string }>;
+      };
+      const more = sessions.length === HISTORY_LIMIT;
+      setHasMoreHistory(more);
+      setHistoryOffset(offset + sessions.length);
+      if (!sessions.length) return;
+      // API returns newest-first; reverse so we display oldest-first.
+      const oldest = [...sessions].reverse();
+      const items: ChatItem[] = [];
+      for (let i = 0; i < oldest.length; i++) {
+        const session = oldest[i];
+        const mr = await fetch(`/api/chat-sessions/${session.id}`);
+        if (!mr.ok) continue;
+        const { messages: msgs } = await mr.json() as {
+          messages: Array<{ id: string; role: "user" | "assistant"; content: string; created_at: string }>;
+        };
+        if (i > 0 || prepend) {
+          items.push({ kind: "divider", id: `divider-${session.id}` });
+        }
+        for (const msg of msgs) {
+          items.push({ role: msg.role, content: msg.content, createdAt: msg.created_at });
+        }
+      }
+      if (prepend) {
+        setMessages((prev) => [...items, ...prev]);
+      } else {
+        setMessages(items);
+      }
+    } catch {
+      // silently ignore history load failures
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!ready) return;
+    loadHistory(0, false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (!hasMoreHistory || historyLoading) return;
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) {
+        loadHistory(historyOffset, true);
+      }
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasMoreHistory, historyLoading, historyOffset]);
 
   // Wrapper around fetch that redirects to /login on any 401 response.
   function apiFetch(url: string, init?: RequestInit) {
@@ -306,10 +381,20 @@ export default function Home() {
 
       {/* Message thread */}
       <div style={styles.thread}>
-        {messages.length === 0 && (
+        {/* Sentinel observed for infinite scroll upward */}
+        {hasMoreHistory && <div ref={sentinelRef} />}
+        {historyLoading && (
+          <p style={styles.historyLoading}>Loading…</p>
+        )}
+        {messages.length === 0 && !historyLoading && (
           <p style={styles.emptyHint}>Start a conversation…</p>
         )}
-        {messages.map((msg, i) => (
+        {messages.map((item, i) => {
+          if ("kind" in item && item.kind === "divider") {
+            return <hr key={item.id} data-testid="session-divider" style={styles.sessionDivider} />;
+          }
+          const msg = item as Message;
+          return (
           <div
             key={i}
             style={{
@@ -373,7 +458,8 @@ export default function Home() {
               </p>
             )}
           </div>
-        ))}
+          );
+        })}
         {error && <p style={styles.errorText}>Error: {error}</p>}
         <div ref={bottomRef} />
       </div>
@@ -734,5 +820,17 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #e5e5e5",
     padding: "0.4rem 0.75rem",
     whiteSpace: "normal",
+  },
+  sessionDivider: {
+    border: "none",
+    borderTop: "1px solid #e5e5e5",
+    margin: "0.5rem 0",
+    opacity: 0.6,
+  },
+  historyLoading: {
+    color: "#aaa",
+    textAlign: "center",
+    fontSize: "0.85rem",
+    margin: "0.5rem 0",
   },
 };
