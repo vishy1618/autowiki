@@ -79,6 +79,18 @@ func (m *Manager) WriteAttachmentMeta(path string, meta AttachmentMeta) error {
 	return os.WriteFile(filepath.Join(m.root, path+".meta.json"), data, 0o644)
 }
 
+// UpdateAttachmentDescription reads the sidecar for path, sets Description to
+// the given text, and writes the sidecar back. Returns an error if the sidecar
+// does not yet exist.
+func (m *Manager) UpdateAttachmentDescription(path, description string) error {
+	meta, err := m.ReadAttachmentMeta(path)
+	if err != nil {
+		return err
+	}
+	meta.Description = description
+	return m.WriteAttachmentMeta(path, meta)
+}
+
 // ReadAttachmentMeta reads the sidecar JSON file for the given vault-relative path.
 func (m *Manager) ReadAttachmentMeta(path string) (AttachmentMeta, error) {
 	data, err := os.ReadFile(filepath.Join(m.root, path+".meta.json"))
@@ -335,8 +347,11 @@ func (m *Manager) ListVault(path string, recursive bool) ([]VaultEntry, error) {
 
 // DeleteItem deletes a file or directory at the vault-relative path.
 // If path is a non-empty directory and recursive is false, an error is returned.
-// Returns an error if the path escapes the vault root.
+// Returns an error if the path escapes the vault root or if path is empty.
 func (m *Manager) DeleteItem(path string, recursive bool) error {
+	if path == "" {
+		return fmt.Errorf("path must not be empty")
+	}
 	abs, err := m.safePath(path)
 	if err != nil {
 		return err
@@ -364,8 +379,11 @@ func (m *Manager) DeleteItem(path string, recursive bool) error {
 
 // MoveFile moves a file within the vault, creating parent directories as needed.
 // Both from and to are vault-relative paths. Returns an error if either path
-// escapes the vault root, or if the source file does not exist.
+// escapes the vault root, is empty, or if the source file does not exist.
 func (m *Manager) MoveFile(from, to string) error {
+	if from == "" || to == "" {
+		return fmt.Errorf("from and to paths must not be empty")
+	}
 	fromAbs, err := m.safePath(from)
 	if err != nil {
 		return err

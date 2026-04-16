@@ -618,6 +618,16 @@ func TestManager_DeleteItem_RejectsEscapingPath(t *testing.T) {
 	}
 }
 
+func TestManager_DeleteItem_RejectsEmptyPath(t *testing.T) {
+	m := newManager(t)
+
+	err := m.DeleteItem("", false)
+
+	if err == nil {
+		t.Fatal("expected error for empty path, got nil")
+	}
+}
+
 // EnsureSchema
 
 func TestManager_SearchPages_FindsMatchInAttachmentSidecar(t *testing.T) {
@@ -731,6 +741,73 @@ func TestManager_EnsureSchema_DefaultTemplateContainsExpectedSections(t *testing
 		if !strings.Contains(content, section) {
 			t.Errorf("default schema missing section %q", section)
 		}
+	}
+}
+
+func TestManager_UpdateAttachmentDescription_WritesDescriptionToSidecar(t *testing.T) {
+	// Arrange — save an attachment and write an initial sidecar with no description.
+	m := newManager(t)
+	path, _ := m.SaveAttachment("doc.pdf", []byte("%PDF"))
+	_ = m.WriteAttachmentMeta(path, vault.AttachmentMeta{
+		ID:           "att1",
+		OriginalName: "doc.pdf",
+		MediaType:    "application/pdf",
+	})
+
+	// Act
+	err := m.UpdateAttachmentDescription(path, "A report on Q1 results.")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	meta, err := m.ReadAttachmentMeta(path)
+	if err != nil {
+		t.Fatalf("ReadAttachmentMeta: %v", err)
+	}
+	if meta.Description != "A report on Q1 results." {
+		t.Errorf("want description %q, got %q", "A report on Q1 results.", meta.Description)
+	}
+}
+
+func TestManager_UpdateAttachmentDescription_PreservesOtherFields(t *testing.T) {
+	// Arrange
+	m := newManager(t)
+	path, _ := m.SaveAttachment("doc.pdf", []byte("%PDF"))
+	original := vault.AttachmentMeta{
+		ID:           "att2",
+		OriginalName: "quarterly.pdf",
+		MediaType:    "application/pdf",
+	}
+	_ = m.WriteAttachmentMeta(path, original)
+
+	// Act
+	_ = m.UpdateAttachmentDescription(path, "summary text")
+
+	// Assert — other fields must survive the update.
+	meta, _ := m.ReadAttachmentMeta(path)
+	if meta.ID != "att2" {
+		t.Errorf("ID changed: want %q, got %q", "att2", meta.ID)
+	}
+	if meta.OriginalName != "quarterly.pdf" {
+		t.Errorf("OriginalName changed: want %q, got %q", "quarterly.pdf", meta.OriginalName)
+	}
+	if meta.MediaType != "application/pdf" {
+		t.Errorf("MediaType changed: want %q, got %q", "application/pdf", meta.MediaType)
+	}
+}
+
+func TestManager_UpdateAttachmentDescription_ErrorWhenNoSidecar(t *testing.T) {
+	// Arrange — path exists in vault but has no sidecar.
+	m := newManager(t)
+	path, _ := m.SaveAttachment("doc.pdf", []byte("%PDF"))
+
+	// Act
+	err := m.UpdateAttachmentDescription(path, "notes")
+
+	// Assert
+	if err == nil {
+		t.Fatal("expected error when sidecar does not exist, got nil")
 	}
 }
 
