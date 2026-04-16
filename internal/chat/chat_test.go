@@ -921,6 +921,142 @@ func TestHandler_PostChat_DispatchesDeleteItemAndEmitsVaultEvent(t *testing.T) {
 	}
 }
 
+// saveAttachmentNotesSSE is a streaming response where the model calls
+// save_attachment_notes to write notes about a PDF to its sidecar.
+const saveAttachmentNotesSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_san1","name":"save_attachment_notes","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"_attachments/report.pdf\",\"notes\":\"Q1 results: revenue up 12%, costs stable.\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func TestHandler_PostChat_DispatchesSaveAttachmentNotesAndUpdatesSidecar(t *testing.T) {
+	// Arrange — create an attachment sidecar with no description.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	attachPath := "_attachments/report.pdf"
+	_ = vm.WriteFile(attachPath, "%PDF")
+	_ = vm.WriteAttachmentMeta(attachPath, vault.AttachmentMeta{
+		ID:           "att_report",
+		OriginalName: "report.pdf",
+		MediaType:    "application/pdf",
+	})
+
+	cs := store.NewMemChatStore()
+	// First call: save_attachment_notes. Second call: final text answer.
+	streamer := &multiResponseStreamer{bodies: []string{saveAttachmentNotesSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"summarise this report"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — sidecar description was updated.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	meta, err := vm.ReadAttachmentMeta(attachPath)
+	if err != nil {
+		t.Fatalf("ReadAttachmentMeta: %v", err)
+	}
+	if meta.Description != "Q1 results: revenue up 12%, costs stable." {
+		t.Errorf("want description %q, got %q", "Q1 results: revenue up 12%, costs stable.", meta.Description)
+	}
+
+	// Assert — response ends with done (not an error).
+	events := parseSSE(t, w.Body.String())
+	if len(events) == 0 || events[len(events)-1].event != "done" {
+		t.Errorf("expected last event to be done, got: %v", events)
+	}
+}
+
+// twoDeleteItemsSSE is a streaming response where the model calls delete_item
+// twice in a single response — one for a file and one for its sidecar.
+const twoDeleteItemsSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_di1","name":"delete_item","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"file1.md\",\"recursive\":false}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_di2","name":"delete_item","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"file2.md\",\"recursive\":false}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func TestHandler_PostChat_DispatchesMultipleToolCallsInOneResponse(t *testing.T) {
+	// Arrange — vault has two files; model deletes both in one response.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("file1.md", "delete me")
+	_ = vm.WriteFile("file2.md", "delete me too")
+
+	cs := store.NewMemChatStore()
+	// First call: two delete_items in one SSE stream. Second call: final text.
+	streamer := &multiResponseStreamer{bodies: []string{twoDeleteItemsSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"clean up"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — both files were deleted.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "file1.md")); !os.IsNotExist(err) {
+		t.Error("expected file1.md to be deleted")
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "file2.md")); !os.IsNotExist(err) {
+		t.Error("expected file2.md to be deleted")
+	}
+
+	// Assert — two vault SSE events emitted (one per deleted file).
+	events := parseSSE(t, w.Body.String())
+	vaultCount := 0
+	for _, ev := range events {
+		if ev.event == "vault" {
+			vaultCount++
+		}
+	}
+	if vaultCount != 2 {
+		t.Errorf("expected 2 vault SSE events, got %d; events: %v", vaultCount, events)
+	}
+
+	// Assert — response ends with done.
+	if len(events) == 0 || events[len(events)-1].event != "done" {
+		t.Errorf("expected last event to be done, got: %v", events)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 type sseEvent struct {

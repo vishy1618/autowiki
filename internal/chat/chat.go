@@ -40,13 +40,18 @@ func NewHandler(cs store.ChatStore, streamer Streamer, vm *vault.Manager) http.H
 // permitted per request to prevent runaway agentic loops.
 const maxRetrievalCalls = 15
 
+// toolCall holds one tool_use block emitted by the LLM.
+type toolCall struct {
+	id   string
+	name string
+	json string
+}
+
 // streamResult holds the outcome of scanning one LLM SSE stream.
 type streamResult struct {
-	assembled   string
-	toolUseID   string
-	toolUseName string
-	toolJSON    string
-	scanErr     error
+	assembled string
+	toolCalls []toolCall
+	scanErr   error
 }
 
 // handleChat processes a chat message: persists it, runs the agentic loop
@@ -151,7 +156,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	flusher, canFlush := w.(http.Flusher)
 
 	// Agentic loop: continue until the LLM produces a final answer (no tool
-	// call) or save_to_vault, or we hit the retrieval cap.
+	// calls) or save_to_vault, or we hit the retrieval cap.
 	for retrievalCount := 0; ; {
 		sr := h.scanStream(body, w, canFlush, flusher)
 		body.Close()
@@ -164,10 +169,10 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Persist the assistant message (text + optional tool_use block).
+		// Persist the assistant message (text + all tool_use blocks if any).
 		assistantContent := sr.assembled
-		if sr.toolUseID != "" {
-			assistantContent = buildAssistantContent(sr.assembled, sr.toolUseID, sr.toolUseName, sr.toolJSON)
+		if len(sr.toolCalls) > 0 {
+			assistantContent = buildAssistantContent(sr.assembled, sr.toolCalls)
 		}
 		_ = h.store.AppendMessage(store.Message{
 			SessionID: session.ID,
@@ -175,8 +180,8 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			Content:   assistantContent,
 		})
 
-		// No tool call → final answer; we're done.
-		if sr.toolUseID == "" {
+		// No tool calls → final answer; we're done.
+		if len(sr.toolCalls) == 0 {
 			writeSSE(w, "done", fmt.Sprintf(`{"session_id":%q}`, session.ID))
 			if canFlush {
 				flusher.Flush()
@@ -184,20 +189,150 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// save_to_vault: emit status, execute writes, emit vault event, finish.
-		if sr.toolUseName == "save_to_vault" {
-			var saveInput vaultWriteInput
-			if err := json.Unmarshal([]byte(sr.toolJSON), &saveInput); err == nil && len(saveInput.Pages) > 0 {
-				paths := make([]string, len(saveInput.Pages))
-				for i, p := range saveInput.Pages {
-					paths[i] = p.Path
+		// Dispatch each tool call and collect results.
+		hasSaveToVault := false
+		for _, tc := range sr.toolCalls {
+			switch tc.name {
+			case "save_to_vault":
+				hasSaveToVault = true
+				var saveInput vaultWriteInput
+				if err := json.Unmarshal([]byte(tc.json), &saveInput); err == nil && len(saveInput.Pages) > 0 {
+					paths := make([]string, len(saveInput.Pages))
+					for i, p := range saveInput.Pages {
+						paths[i] = p.Path
+					}
+					writeSSE(w, "status", fmt.Sprintf(`{"message":"Saving %s\u2026"}`, strings.Join(paths, ", ")))
+					if canFlush {
+						flusher.Flush()
+					}
 				}
-				writeSSE(w, "status", fmt.Sprintf(`{"message":"Saving %s\u2026"}`, strings.Join(paths, ", ")))
+				h.applyVaultWrites(w, session.ID, tc.id, tc.json, canFlush, flusher)
+
+			case "read_page":
+				var input struct {
+					Path string `json:"path"`
+				}
+				_ = json.Unmarshal([]byte(tc.json), &input)
+				writeSSE(w, "status", fmt.Sprintf(`{"message":"Reading %s\u2026"}`, input.Path))
 				if canFlush {
 					flusher.Flush()
 				}
+				content, _ := h.vault.ReadFile(input.Path)
+				h.storeToolResult(session.ID, tc.id, content, false)
+
+			case "search_vault":
+				var input struct {
+					Query string `json:"query"`
+				}
+				_ = json.Unmarshal([]byte(tc.json), &input)
+				writeSSE(w, "status", fmt.Sprintf(`{"message":"Searching for %s\u2026"}`, input.Query))
+				if canFlush {
+					flusher.Flush()
+				}
+				results, _ := h.vault.SearchPages(input.Query, 10)
+				resultJSON, _ := json.Marshal(results)
+				h.storeToolResult(session.ID, tc.id, string(resultJSON), false)
+
+			case "list_vault":
+				var input struct {
+					Path      string `json:"path"`
+					Recursive bool   `json:"recursive"`
+				}
+				_ = json.Unmarshal([]byte(tc.json), &input)
+				writeSSE(w, "status", `{"message":"Listing vault\u2026"}`)
+				if canFlush {
+					flusher.Flush()
+				}
+				entries, _ := h.vault.ListVault(input.Path, input.Recursive)
+				resultJSON, _ := json.Marshal(entries)
+				h.storeToolResult(session.ID, tc.id, string(resultJSON), false)
+
+			case "read_page_partial":
+				var input struct {
+					Path     string `json:"path"`
+					MaxChars int    `json:"max_chars"`
+				}
+				_ = json.Unmarshal([]byte(tc.json), &input)
+				writeSSE(w, "status", fmt.Sprintf(`{"message":"Reading %s\u2026"}`, input.Path))
+				if canFlush {
+					flusher.Flush()
+				}
+				content, _ := h.vault.ReadFilePartial(input.Path, input.MaxChars)
+				h.storeToolResult(session.ID, tc.id, content, false)
+
+			case "move_page":
+				var input struct {
+					From string `json:"from"`
+					To   string `json:"to"`
+				}
+				if err := json.Unmarshal([]byte(tc.json), &input); err != nil {
+					slog.Warn("move_page: bad tool JSON", "err", err, "json", tc.json)
+				}
+				writeSSE(w, "status", fmt.Sprintf(`{"message":"Moving %s\u2026"}`, input.From))
+				if canFlush {
+					flusher.Flush()
+				}
+				if err := h.vault.MoveFile(input.From, input.To); err != nil {
+					h.storeToolResult(session.ID, tc.id, err.Error(), true)
+				} else {
+					_ = h.vault.AppendLog(fmt.Sprintf("moved %s → %s", input.From, input.To))
+					h.storeToolResult(session.ID, tc.id, fmt.Sprintf("moved %s to %s", input.From, input.To), false)
+					payload, _ := json.Marshal(map[string]any{"action": "moved", "from": input.From, "to": input.To})
+					writeSSE(w, "vault", string(payload))
+					if canFlush {
+						flusher.Flush()
+					}
+				}
+
+			case "save_attachment_notes":
+			var input struct {
+				Path  string `json:"path"`
+				Notes string `json:"notes"`
 			}
-			h.applyVaultWrites(w, session.ID, sr.toolUseID, sr.toolJSON, canFlush, flusher)
+			if err := json.Unmarshal([]byte(tc.json), &input); err != nil {
+				slog.Warn("save_attachment_notes: bad tool JSON", "err", err, "json", tc.json)
+				h.storeToolResult(session.ID, tc.id, "invalid tool input: "+err.Error(), true)
+				continue
+			}
+			if err := h.vault.UpdateAttachmentDescription(input.Path, input.Notes); err != nil {
+				h.storeToolResult(session.ID, tc.id, err.Error(), true)
+			} else {
+				h.storeToolResult(session.ID, tc.id, "notes saved for "+input.Path, false)
+			}
+
+		case "delete_item":
+				var input struct {
+					Path      string `json:"path"`
+					Recursive bool   `json:"recursive"`
+				}
+				if err := json.Unmarshal([]byte(tc.json), &input); err != nil {
+					slog.Warn("delete_item: bad tool JSON", "err", err, "json", tc.json)
+				}
+				slog.Debug("delete_item: dispatching", "raw_json", tc.json, "path", input.Path, "recursive", input.Recursive)
+				writeSSE(w, "status", fmt.Sprintf(`{"message":"Deleting %s\u2026"}`, input.Path))
+				if canFlush {
+					flusher.Flush()
+				}
+				if err := h.vault.DeleteItem(input.Path, input.Recursive); err != nil {
+					slog.Debug("delete_item: vault error", "path", input.Path, "recursive", input.Recursive, "err", err)
+					h.storeToolResult(session.ID, tc.id, err.Error(), true)
+				} else {
+					_ = h.vault.AppendLog(fmt.Sprintf("deleted %s", input.Path))
+					h.storeToolResult(session.ID, tc.id, fmt.Sprintf("deleted %s", input.Path), false)
+					payload, _ := json.Marshal(map[string]any{"action": "deleted", "path": input.Path})
+					writeSSE(w, "vault", string(payload))
+					if canFlush {
+						flusher.Flush()
+					}
+				}
+
+			default:
+				h.storeToolResult(session.ID, tc.id, "unknown tool: "+tc.name, true)
+			}
+		}
+
+		// save_to_vault ends the turn (no further LLM call needed).
+		if hasSaveToVault {
 			writeSSE(w, "done", fmt.Sprintf(`{"session_id":%q}`, session.ID))
 			if canFlush {
 				flusher.Flush()
@@ -205,8 +340,8 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Retrieval tool: enforce cap, then execute and loop.
-		retrievalCount++
+		// Enforce retrieval cap across all tool calls in this turn.
+		retrievalCount += len(sr.toolCalls)
 		if retrievalCount > maxRetrievalCalls {
 			writeSSE(w, "error", `{"message":"exceeded maximum tool call limit"}`)
 			if canFlush {
@@ -215,109 +350,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		switch sr.toolUseName {
-		case "read_page":
-			var input struct {
-				Path string `json:"path"`
-			}
-			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
-			writeSSE(w, "status", fmt.Sprintf(`{"message":"Reading %s\u2026"}`, input.Path))
-			if canFlush {
-				flusher.Flush()
-			}
-			content, _ := h.vault.ReadFile(input.Path)
-			h.storeToolResult(session.ID, sr.toolUseID, content, false)
-
-		case "search_vault":
-			var input struct {
-				Query string `json:"query"`
-			}
-			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
-			writeSSE(w, "status", fmt.Sprintf(`{"message":"Searching for %s\u2026"}`, input.Query))
-			if canFlush {
-				flusher.Flush()
-			}
-			results, _ := h.vault.SearchPages(input.Query, 10)
-			resultJSON, _ := json.Marshal(results)
-			h.storeToolResult(session.ID, sr.toolUseID, string(resultJSON), false)
-
-		case "list_vault":
-			var input struct {
-				Path      string `json:"path"`
-				Recursive bool   `json:"recursive"`
-			}
-			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
-			writeSSE(w, "status", fmt.Sprintf(`{"message":"Listing vault\u2026"}`))
-			if canFlush {
-				flusher.Flush()
-			}
-			entries, _ := h.vault.ListVault(input.Path, input.Recursive)
-			resultJSON, _ := json.Marshal(entries)
-			h.storeToolResult(session.ID, sr.toolUseID, string(resultJSON), false)
-
-		case "read_page_partial":
-			var input struct {
-				Path     string `json:"path"`
-				MaxChars int    `json:"max_chars"`
-			}
-			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
-			writeSSE(w, "status", fmt.Sprintf(`{"message":"Reading %s\u2026"}`, input.Path))
-			if canFlush {
-				flusher.Flush()
-			}
-			content, _ := h.vault.ReadFilePartial(input.Path, input.MaxChars)
-			h.storeToolResult(session.ID, sr.toolUseID, content, false)
-
-		case "move_page":
-			var input struct {
-				From string `json:"from"`
-				To   string `json:"to"`
-			}
-			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
-			writeSSE(w, "status", fmt.Sprintf(`{"message":"Moving %s\u2026"}`, input.From))
-			if canFlush {
-				flusher.Flush()
-			}
-			if err := h.vault.MoveFile(input.From, input.To); err != nil {
-				h.storeToolResult(session.ID, sr.toolUseID, err.Error(), true)
-			} else {
-				_ = h.vault.AppendLog(fmt.Sprintf("moved %s → %s", input.From, input.To))
-				h.storeToolResult(session.ID, sr.toolUseID, fmt.Sprintf("moved %s to %s", input.From, input.To), false)
-				payload, _ := json.Marshal(map[string]any{"action": "moved", "from": input.From, "to": input.To})
-				writeSSE(w, "vault", string(payload))
-				if canFlush {
-					flusher.Flush()
-				}
-			}
-
-		case "delete_item":
-			var input struct {
-				Path      string `json:"path"`
-				Recursive bool   `json:"recursive"`
-			}
-			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
-			writeSSE(w, "status", fmt.Sprintf(`{"message":"Deleting %s\u2026"}`, input.Path))
-			if canFlush {
-				flusher.Flush()
-			}
-			if err := h.vault.DeleteItem(input.Path, input.Recursive); err != nil {
-				h.storeToolResult(session.ID, sr.toolUseID, err.Error(), true)
-			} else {
-				_ = h.vault.AppendLog(fmt.Sprintf("deleted %s", input.Path))
-				h.storeToolResult(session.ID, sr.toolUseID, fmt.Sprintf("deleted %s", input.Path), false)
-				payload, _ := json.Marshal(map[string]any{"action": "deleted", "path": input.Path})
-				writeSSE(w, "vault", string(payload))
-				if canFlush {
-					flusher.Flush()
-				}
-			}
-
-		default:
-			// Unknown retrieval tool: store an error result and continue.
-			h.storeToolResult(session.ID, sr.toolUseID, "unknown tool: "+sr.toolUseName, true)
-		}
-
-		// Re-fetch history (tool_result just appended) and open the next stream.
+		// Re-fetch history (tool_results just appended) and open the next stream.
 		// PDF attachments are not re-sent on loop iterations 2+ — the LLM
 		// already has the document in context from the first call.
 		history, err = h.store.ListMessages(session.ID)
@@ -341,12 +374,13 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 // scanStream reads an Anthropic SSE body, forwarding text deltas to w and
-// accumulating any tool call input. It returns the assembled text, tool call
-// identifiers, and the raw tool input JSON.
+// accumulating any tool call inputs. It returns the assembled text and all
+// tool calls emitted in this stream (there may be more than one).
 func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher http.Flusher) streamResult {
 	var assembled strings.Builder
 	var toolJSONBuf strings.Builder
-	var toolUseID, toolUseName string
+	var currentID, currentName string
+	var calls []toolCall
 	inToolUseBlock := false
 
 	scanner := bufio.NewScanner(body)
@@ -374,8 +408,9 @@ func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher
 			if err := json.Unmarshal([]byte(raw), &payload); err == nil {
 				inToolUseBlock = payload.ContentBlock.Type == "tool_use"
 				if inToolUseBlock {
-					toolUseID = payload.ContentBlock.ID
-					toolUseName = payload.ContentBlock.Name
+					currentID = payload.ContentBlock.ID
+					currentName = payload.ContentBlock.Name
+					toolJSONBuf.Reset()
 				}
 			}
 
@@ -395,37 +430,44 @@ func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher
 			}
 
 		case "content_block_stop":
+			if inToolUseBlock {
+				calls = append(calls, toolCall{
+					id:   currentID,
+					name: currentName,
+					json: toolJSONBuf.String(),
+				})
+			}
 			inToolUseBlock = false
 		}
 	}
 
 	return streamResult{
-		assembled:   assembled.String(),
-		toolUseID:   toolUseID,
-		toolUseName: toolUseName,
-		toolJSON:    toolJSONBuf.String(),
-		scanErr:     scanner.Err(),
+		assembled: assembled.String(),
+		toolCalls: calls,
+		scanErr:   scanner.Err(),
 	}
 }
 
 // buildAssistantContent serialises a text + tool_use content-block array.
 // Only includes a text block when text is non-empty (Anthropic rejects empty
-// text blocks on subsequent turns).
-func buildAssistantContent(text, toolUseID, toolUseName, toolJSON string) string {
-	var toolInput json.RawMessage
-	if err := json.Unmarshal([]byte(toolJSON), &toolInput); err != nil {
-		toolInput = json.RawMessage("{}")
-	}
+// text blocks on subsequent turns). Handles multiple tool calls.
+func buildAssistantContent(text string, calls []toolCall) string {
 	var blocks []any
 	if text != "" {
 		blocks = append(blocks, map[string]any{"type": "text", "text": text})
 	}
-	blocks = append(blocks, map[string]any{
-		"type":  "tool_use",
-		"id":    toolUseID,
-		"name":  toolUseName,
-		"input": toolInput,
-	})
+	for _, tc := range calls {
+		var toolInput json.RawMessage
+		if err := json.Unmarshal([]byte(tc.json), &toolInput); err != nil {
+			toolInput = json.RawMessage("{}")
+		}
+		blocks = append(blocks, map[string]any{
+			"type":  "tool_use",
+			"id":    tc.id,
+			"name":  tc.name,
+			"input": toolInput,
+		})
+	}
 	b, err := json.Marshal(blocks)
 	if err != nil {
 		return text

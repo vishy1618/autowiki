@@ -66,7 +66,9 @@ Whenever you call save_to_vault, always include an updated index.md as one of th
 
 You have two retrieval tools — read_page and search_vault — to look up existing vault content. Use them only when you genuinely need vault content to answer a question or to avoid duplicating something already there. Do NOT use them when the user is sharing new information to capture (a fact, a document, a PDF): in that case you already have the content and should call save_to_vault directly. Never call search_vault with an empty or vague query.
 
-Attachments (images, PDFs, and other files) are stored in _attachments/. Each attachment has a .meta.json sidecar at the same path with ".meta.json" appended (e.g. "_attachments/photo-20260416-abc123.png.meta.json"). The sidecar contains the original filename, media type, and a description. When the user references an uploaded file — by description, name, or topic — use search_vault to find it, or read_page on the sidecar path to fetch its details directly.
+Attachments (images, PDFs, and other files) are stored in _attachments/. Each attachment has a .meta.json sidecar at the same path with ".meta.json" appended (e.g. "_attachments/photo-20260416-abc123.png.meta.json"). The sidecar contains the original filename, media type, and a description generated when the file was uploaded. When the user references an uploaded file — by description, name, or topic — call search_vault to find it, or read_page on the sidecar path to fetch its details directly. Do not say you cannot view or recall an image before you have searched the vault for it; the description from upload time is always retrievable.
+
+PDF RULE: Whenever the user's message includes a PDF attachment, you MUST call save_attachment_notes before responding. Extract the key content — topics, facts, dates, names, decisions, and any other details worth searching for later — and write them to the sidecar using save_attachment_notes. This is not optional: without it, the PDF content will be lost and future searches will not surface it. Call save_attachment_notes first, then answer the user's question.
 
 When writing vault pages, use [[wikilinks]] to link to related pages wherever appropriate. Follow the conventions in the Wiki Schema section of this prompt. Only modify schema.md if the user explicitly asks you to update their wiki conventions.
 
@@ -82,6 +84,7 @@ var toolDefinitions = []any{
 	readPagePartialToolDefinition,
 	movePageToolDefinition,
 	deleteItemToolDefinition,
+	saveAttachmentNotesToolDefinition,
 	saveToVaultToolDefinition,
 }
 
@@ -163,6 +166,22 @@ var deleteItemToolDefinition = map[string]any{
 			"recursive": map[string]any{"type": "boolean", "description": "Required true to delete a non-empty directory. Default false."},
 		},
 		"required": []string{"path"},
+	},
+}
+
+// saveAttachmentNotesToolDefinition lets the LLM write its understanding of an
+// attachment back to the sidecar, so future searches can find the content
+// without re-sending the file.
+var saveAttachmentNotesToolDefinition = map[string]any{
+	"name":        "save_attachment_notes",
+	"description": "Write a summary or extracted text to the sidecar of an attachment already saved in the vault. Call this whenever you receive a PDF attachment — capture key content, topics, and any important details so future searches can surface this file without re-sending it.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":  map[string]any{"type": "string", "description": "Vault-relative path to the attachment (e.g. '_attachments/report-20260416-abc123.pdf')."},
+			"notes": map[string]any{"type": "string", "description": "Summary or extracted text to store in the sidecar. Be thorough: include key facts, topics, dates, names, and any other details worth searching for later."},
+		},
+		"required": []string{"path", "notes"},
 	},
 }
 
@@ -373,36 +392,41 @@ func buildRequestMessages(messages []store.Message) []requestMessage {
 
 		switch m.Role {
 		case "tool_result":
-			var tr toolResultContent
-			if err := json.Unmarshal([]byte(m.Content), &tr); err != nil {
-				// Malformed tool_result: skip rather than corrupt the history.
+			// Collect ALL consecutive tool_result messages into one user message.
+			// Multiple consecutive tool_results arise when the LLM emits more than
+			// one tool call in a single turn; Anthropic requires them to be sent as
+			// a single user message containing multiple tool_result content blocks.
+			var trBlocks []any
+			for ; i < len(messages) && messages[i].Role == "tool_result"; i++ {
+				var tr toolResultContent
+				if err := json.Unmarshal([]byte(messages[i].Content), &tr); err != nil {
+					// Malformed tool_result: skip rather than corrupt the history.
+					continue
+				}
+				trBlock := map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": tr.ToolUseID,
+					"content":     tr.Content,
+				}
+				if tr.IsError {
+					trBlock["is_error"] = true
+				}
+				trBlocks = append(trBlocks, trBlock)
+			}
+			i-- // outer loop will i++ past the last tool_result we consumed
+
+			if len(trBlocks) == 0 {
 				continue
-			}
-			trBlock := map[string]any{
-				"type":        "tool_result",
-				"tool_use_id": tr.ToolUseID,
-				"content":     tr.Content,
-			}
-			if tr.IsError {
-				trBlock["is_error"] = true
 			}
 
 			// Merge with the next user message if present.
 			if i+1 < len(messages) && messages[i+1].Role == "user" {
 				i++
 				next := messages[i]
-				out = append(out, requestMessage{
-					Role: "user",
-					Content: []any{
-						trBlock,
-						map[string]any{"type": "text", "text": next.Content},
-					},
-				})
+				content := append(trBlocks, map[string]any{"type": "text", "text": next.Content})
+				out = append(out, requestMessage{Role: "user", Content: content})
 			} else {
-				out = append(out, requestMessage{
-					Role:    "user",
-					Content: []any{trBlock},
-				})
+				out = append(out, requestMessage{Role: "user", Content: trBlocks})
 			}
 
 		case "assistant":
