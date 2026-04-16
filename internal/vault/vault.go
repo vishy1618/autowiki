@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,7 +95,10 @@ func (m *Manager) ReadAttachmentMeta(path string) (AttachmentMeta, error) {
 // WriteFile writes content to a vault-relative path, creating parent
 // directories as needed. It overwrites any existing file at that path.
 func (m *Manager) WriteFile(path, content string) error {
-	full := filepath.Join(m.root, path)
+	full, err := m.safePath(path)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
@@ -104,7 +108,10 @@ func (m *Manager) WriteFile(path, content string) error {
 // AppendLog appends a timestamped entry to log.md in the vault root.
 func (m *Manager) AppendLog(entry string) error {
 	line := fmt.Sprintf("- %s — %s\n", time.Now().Format(time.RFC3339), entry)
-	full := filepath.Join(m.root, "log.md")
+	full, err := m.safePath("log.md")
+	if err != nil {
+		return err
+	}
 	f, err := os.OpenFile(full, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -144,13 +151,11 @@ func (m *Manager) SearchPages(query string, maxResults int) ([]SearchResult, err
 			return err
 		}
 		if d.IsDir() {
-			// Skip _attachments directory entirely.
-			if d.Name() == "_attachments" {
-				return filepath.SkipDir
-			}
 			return nil
 		}
-		if !strings.HasSuffix(d.Name(), ".md") {
+		isMD := strings.HasSuffix(d.Name(), ".md")
+		isSidecar := strings.HasSuffix(d.Name(), ".meta.json")
+		if !isMD && !isSidecar {
 			return nil
 		}
 		if len(results) >= maxResults {
@@ -168,6 +173,11 @@ func (m *Manager) SearchPages(query string, maxResults int) ([]SearchResult, err
 		}
 		// Normalise to forward slashes.
 		relPath = filepath.ToSlash(relPath)
+		// For sidecars, report the attachment path (without .meta.json suffix)
+		// so callers can use it directly in ![[...]] links or tool calls.
+		if isSidecar {
+			relPath = strings.TrimSuffix(relPath, ".meta.json")
+		}
 
 		lines := splitLines(data)
 		for i, line := range lines {
@@ -221,14 +231,169 @@ func buildSnippet(lines []string, i, context, maxChars int) string {
 	return snippet
 }
 
+// safePath joins rel with the vault root, cleans the result, and verifies it
+// is still inside the root. Returns an error for any path that would escape
+// (e.g. "../../etc/passwd" or an absolute path outside the vault).
+func (m *Manager) safePath(rel string) (string, error) {
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path %q escapes vault root", rel)
+	}
+	abs := filepath.Clean(filepath.Join(m.root, rel))
+	root := filepath.Clean(m.root)
+	if abs != root && !strings.HasPrefix(abs, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes vault root", rel)
+	}
+	return abs, nil
+}
+
 // ReadFile reads a vault-relative .md file and returns its contents.
 // Returns an empty string (no error) when the file does not exist.
 func (m *Manager) ReadFile(path string) (string, error) {
-	full := filepath.Join(m.root, path)
+	full, err := m.safePath(path)
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(full)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// VaultEntry describes a single file or directory inside the vault.
+type VaultEntry struct {
+	Path string
+	Type string // "file" or "dir"
+	Size int64
+}
+
+// ListVault lists files and subdirectories under path (relative to vault root).
+// When path is empty, the vault root is used. If recursive is true, all nested
+// entries are returned; otherwise only the immediate children are listed.
+// Returns an error if path escapes the vault root.
+func (m *Manager) ListVault(path string, recursive bool) ([]VaultEntry, error) {
+	var base string
+	if path == "" {
+		base = filepath.Clean(m.root)
+	} else {
+		var err error
+		base, err = m.safePath(path)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var entries []VaultEntry
+	err := filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == base {
+			return nil // skip the root itself
+		}
+		rel, _ := filepath.Rel(m.root, p)
+		rel = filepath.ToSlash(rel)
+
+		if !recursive && d.IsDir() {
+			entries = append(entries, VaultEntry{Path: rel, Type: "dir"})
+			return filepath.SkipDir
+		}
+		if !recursive {
+			// non-recursive: only immediate children
+			if filepath.Dir(p) != base {
+				return nil
+			}
+			info, _ := d.Info()
+			var size int64
+			if info != nil {
+				size = info.Size()
+			}
+			entries = append(entries, VaultEntry{Path: rel, Type: "file", Size: size})
+			return nil
+		}
+		// recursive
+		if d.IsDir() {
+			entries = append(entries, VaultEntry{Path: rel, Type: "dir"})
+			return nil
+		}
+		info, _ := d.Info()
+		var size int64
+		if info != nil {
+			size = info.Size()
+		}
+		entries = append(entries, VaultEntry{Path: rel, Type: "file", Size: size})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// DeleteItem deletes a file or directory at the vault-relative path.
+// If path is a non-empty directory and recursive is false, an error is returned.
+// Returns an error if the path escapes the vault root.
+func (m *Manager) DeleteItem(path string, recursive bool) error {
+	abs, err := m.safePath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() && !recursive {
+		// Check if empty.
+		entries, err := os.ReadDir(abs)
+		if err != nil {
+			return err
+		}
+		if len(entries) > 0 {
+			return fmt.Errorf("directory %q is not empty; use recursive=true to delete", path)
+		}
+		return os.Remove(abs)
+	}
+	if recursive {
+		return os.RemoveAll(abs)
+	}
+	return os.Remove(abs)
+}
+
+// MoveFile moves a file within the vault, creating parent directories as needed.
+// Both from and to are vault-relative paths. Returns an error if either path
+// escapes the vault root, or if the source file does not exist.
+func (m *Manager) MoveFile(from, to string) error {
+	fromAbs, err := m.safePath(from)
+	if err != nil {
+		return err
+	}
+	toAbs, err := m.safePath(to)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(toAbs), 0o755); err != nil {
+		return err
+	}
+	return os.Rename(fromAbs, toAbs)
+}
+
+// ReadFilePartial reads the first maxChars bytes of a vault-relative file.
+// Uses io.LimitReader so it works correctly regardless of line structure.
+// Returns an error if the path escapes the vault root.
+func (m *Manager) ReadFilePartial(path string, maxChars int) (string, error) {
+	full, err := m.safePath(path)
+	if err != nil {
+		return "", err
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, int64(maxChars)))
 	if err != nil {
 		return "", err
 	}

@@ -804,6 +804,123 @@ func TestHandler_PostChat_EmitsStatusEventOnSaveToVault(t *testing.T) {
 	}
 }
 
+// ── Group 3: new tool dispatch ────────────────────────────────────────────────
+
+const movePageToolUseSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_mv1","name":"move_page","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"from\":\"old.md\",\"to\":\"new/new.md\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+const deleteItemToolUseSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_di1","name":"delete_item","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"trash.md\",\"recursive\":false}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func TestHandler_PostChat_DispatchesMovePageAndEmitsVaultEvent(t *testing.T) {
+	// Arrange
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("old.md", "content to move")
+
+	cs := store.NewMemChatStore()
+	// First call: move_page. Second call: final text answer.
+	streamer := &multiResponseStreamer{bodies: []string{movePageToolUseSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"reorganise my vault"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — file was moved
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "new/new.md")); os.IsNotExist(err) {
+		t.Error("expected new/new.md to exist after move_page")
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "old.md")); !os.IsNotExist(err) {
+		t.Error("expected old.md to be gone after move_page")
+	}
+
+	// Assert — vault SSE event emitted
+	events := parseSSE(t, w.Body.String())
+	hasVault := false
+	for _, ev := range events {
+		if ev.event == "vault" {
+			hasVault = true
+			break
+		}
+	}
+	if !hasVault {
+		t.Errorf("expected vault SSE event for move_page, got events: %v", events)
+	}
+}
+
+func TestHandler_PostChat_DispatchesDeleteItemAndEmitsVaultEvent(t *testing.T) {
+	// Arrange
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("trash.md", "delete me")
+
+	cs := store.NewMemChatStore()
+	// First call: delete_item. Second call: final text answer.
+	streamer := &multiResponseStreamer{bodies: []string{deleteItemToolUseSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"clean up my vault"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — file was deleted
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "trash.md")); !os.IsNotExist(err) {
+		t.Error("expected trash.md to be deleted after delete_item")
+	}
+
+	// Assert — vault SSE event emitted
+	events := parseSSE(t, w.Body.String())
+	hasVault := false
+	for _, ev := range events {
+		if ev.event == "vault" {
+			hasVault = true
+			break
+		}
+	}
+	if !hasVault {
+		t.Errorf("expected vault SSE event for delete_item, got events: %v", events)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 type sseEvent struct {

@@ -66,7 +66,11 @@ Whenever you call save_to_vault, always include an updated index.md as one of th
 
 You have two retrieval tools — read_page and search_vault — to look up existing vault content. Use them only when you genuinely need vault content to answer a question or to avoid duplicating something already there. Do NOT use them when the user is sharing new information to capture (a fact, a document, a PDF): in that case you already have the content and should call save_to_vault directly. Never call search_vault with an empty or vague query.
 
+Attachments (images, PDFs, and other files) are stored in _attachments/. Each attachment has a .meta.json sidecar at the same path with ".meta.json" appended (e.g. "_attachments/photo-20260416-abc123.png.meta.json"). The sidecar contains the original filename, media type, and a description. When the user references an uploaded file — by description, name, or topic — use search_vault to find it, or read_page on the sidecar path to fetch its details directly.
+
 When writing vault pages, use [[wikilinks]] to link to related pages wherever appropriate. Follow the conventions in the Wiki Schema section of this prompt. Only modify schema.md if the user explicitly asks you to update their wiki conventions.
+
+SAFETY RULE: Never delete or overwrite a file unless its content has been confirmed saved to another location first. When reorganising the vault, always save_to_vault the updated content before calling delete_item on the original.
 
 Do not mention Claude, Anthropic, or any underlying model. You are autowiki.`
 
@@ -74,6 +78,10 @@ Do not mention Claude, Anthropic, or any underlying model. You are autowiki.`
 var toolDefinitions = []any{
 	readPageToolDefinition,
 	searchVaultToolDefinition,
+	listVaultToolDefinition,
+	readPagePartialToolDefinition,
+	movePageToolDefinition,
+	deleteItemToolDefinition,
 	saveToVaultToolDefinition,
 }
 
@@ -103,6 +111,61 @@ var searchVaultToolDefinition = map[string]any{
 	},
 }
 
+// listVaultToolDefinition allows the LLM to list vault files and directories.
+var listVaultToolDefinition = map[string]any{
+	"name":        "list_vault",
+	"description": "List files and directories inside the vault. Use this to discover orphan pages or explore the vault structure. Returns each entry's path, type ('file' or 'dir'), and size in bytes.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":      map[string]any{"type": "string", "description": "Vault-relative path to list. Omit or pass empty string for the vault root."},
+			"recursive": map[string]any{"type": "boolean", "description": "If true, list all nested entries. Default false."},
+		},
+	},
+}
+
+// readPagePartialToolDefinition allows the LLM to read the first N characters of a file.
+var readPagePartialToolDefinition = map[string]any{
+	"name":        "read_page_partial",
+	"description": "Read the first max_chars bytes of a vault page. Useful for previewing large pages or checking log.md without loading the full content.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":      map[string]any{"type": "string", "description": "Vault-relative path to the file."},
+			"max_chars": map[string]any{"type": "integer", "description": "Maximum number of bytes to read."},
+		},
+		"required": []string{"path", "max_chars"},
+	},
+}
+
+// movePageToolDefinition allows the LLM to rename or relocate a vault file.
+var movePageToolDefinition = map[string]any{
+	"name":        "move_page",
+	"description": "Move or rename a page within the vault. Parent directories are created as needed. Use this to reorganise the vault structure.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"from": map[string]any{"type": "string", "description": "Vault-relative source path."},
+			"to":   map[string]any{"type": "string", "description": "Vault-relative destination path."},
+		},
+		"required": []string{"from", "to"},
+	},
+}
+
+// deleteItemToolDefinition allows the LLM to delete a file or directory from the vault.
+var deleteItemToolDefinition = map[string]any{
+	"name":        "delete_item",
+	"description": "Delete a file or directory from the vault. SAFETY RULE: never delete a file unless its content has already been confirmed saved to another location. Non-empty directories require recursive=true.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":      map[string]any{"type": "string", "description": "Vault-relative path to delete."},
+			"recursive": map[string]any{"type": "boolean", "description": "Required true to delete a non-empty directory. Default false."},
+		},
+		"required": []string{"path"},
+	},
+}
+
 // saveToVaultToolDefinition is the save_to_vault tool schema sent in every request.
 var saveToVaultToolDefinition = map[string]any{
 	"name":        "save_to_vault",
@@ -124,6 +187,59 @@ var saveToVaultToolDefinition = map[string]any{
 		},
 		"required": []string{"pages"},
 	},
+}
+
+// ConsolidationMessage matches dream.ConsolidationMessage; redefined here to
+// avoid an import cycle (dream → llm is fine; llm → dream must not happen).
+type ConsolidationMessage struct {
+	Role    string
+	Content string
+}
+
+// StreamWithSystem sends a non-chat consolidation request to the Anthropic API
+// with a caller-provided system prompt and returns the raw SSE body.
+// The caller must close the returned ReadCloser.
+func (c *Client) StreamWithSystem(ctx context.Context, systemPrompt string, messages []ConsolidationMessage) (io.ReadCloser, error) {
+	reqMsgs := make([]requestMessage, len(messages))
+	for i, m := range messages {
+		reqMsgs[i] = requestMessage{Role: m.Role, Content: m.Content}
+	}
+
+	body, err := json.Marshal(streamRequest{
+		Model:     c.cfg.Model,
+		MaxTokens: 4096,
+		Stream:    true,
+		System:    systemPrompt,
+		Messages:  reqMsgs,
+		Tools:     toolDefinitions,
+		ToolChoice: map[string]any{
+			"type": "auto",
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshalling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.cfg.BaseURL+messagesPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.cfg.APIKey)
+	req.Header.Set("anthropic-version", anthropicVersion)
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("anthropic API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+	return resp.Body, nil
 }
 
 // Attachment is a file to be sent inline in the current chat turn.

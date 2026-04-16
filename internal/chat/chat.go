@@ -241,6 +241,77 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			resultJSON, _ := json.Marshal(results)
 			h.storeToolResult(session.ID, sr.toolUseID, string(resultJSON), false)
 
+		case "list_vault":
+			var input struct {
+				Path      string `json:"path"`
+				Recursive bool   `json:"recursive"`
+			}
+			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
+			writeSSE(w, "status", fmt.Sprintf(`{"message":"Listing vault\u2026"}`))
+			if canFlush {
+				flusher.Flush()
+			}
+			entries, _ := h.vault.ListVault(input.Path, input.Recursive)
+			resultJSON, _ := json.Marshal(entries)
+			h.storeToolResult(session.ID, sr.toolUseID, string(resultJSON), false)
+
+		case "read_page_partial":
+			var input struct {
+				Path     string `json:"path"`
+				MaxChars int    `json:"max_chars"`
+			}
+			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
+			writeSSE(w, "status", fmt.Sprintf(`{"message":"Reading %s\u2026"}`, input.Path))
+			if canFlush {
+				flusher.Flush()
+			}
+			content, _ := h.vault.ReadFilePartial(input.Path, input.MaxChars)
+			h.storeToolResult(session.ID, sr.toolUseID, content, false)
+
+		case "move_page":
+			var input struct {
+				From string `json:"from"`
+				To   string `json:"to"`
+			}
+			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
+			writeSSE(w, "status", fmt.Sprintf(`{"message":"Moving %s\u2026"}`, input.From))
+			if canFlush {
+				flusher.Flush()
+			}
+			if err := h.vault.MoveFile(input.From, input.To); err != nil {
+				h.storeToolResult(session.ID, sr.toolUseID, err.Error(), true)
+			} else {
+				_ = h.vault.AppendLog(fmt.Sprintf("moved %s → %s", input.From, input.To))
+				h.storeToolResult(session.ID, sr.toolUseID, fmt.Sprintf("moved %s to %s", input.From, input.To), false)
+				payload, _ := json.Marshal(map[string]any{"action": "moved", "from": input.From, "to": input.To})
+				writeSSE(w, "vault", string(payload))
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+
+		case "delete_item":
+			var input struct {
+				Path      string `json:"path"`
+				Recursive bool   `json:"recursive"`
+			}
+			_ = json.Unmarshal([]byte(sr.toolJSON), &input)
+			writeSSE(w, "status", fmt.Sprintf(`{"message":"Deleting %s\u2026"}`, input.Path))
+			if canFlush {
+				flusher.Flush()
+			}
+			if err := h.vault.DeleteItem(input.Path, input.Recursive); err != nil {
+				h.storeToolResult(session.ID, sr.toolUseID, err.Error(), true)
+			} else {
+				_ = h.vault.AppendLog(fmt.Sprintf("deleted %s", input.Path))
+				h.storeToolResult(session.ID, sr.toolUseID, fmt.Sprintf("deleted %s", input.Path), false)
+				payload, _ := json.Marshal(map[string]any{"action": "deleted", "path": input.Path})
+				writeSSE(w, "vault", string(payload))
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+
 		default:
 			// Unknown retrieval tool: store an error result and continue.
 			h.storeToolResult(session.ID, sr.toolUseID, "unknown tool: "+sr.toolUseName, true)

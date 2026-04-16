@@ -324,7 +324,359 @@ func TestManager_SearchPages_ReturnsEmptyWhenNoMatch(t *testing.T) {
 	}
 }
 
+// safePath / path-traversal protection
+
+func TestManager_ReadFile_RejectsEscapingPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"single parent", "../outside"},
+		{"deep parent", "../../etc/passwd"},
+		{"absolute outside", "/etc/passwd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newManager(t)
+
+			_, err := m.ReadFile(tt.path)
+
+			if err == nil {
+				t.Fatalf("expected error for escaping path %q, got nil", tt.path)
+			}
+		})
+	}
+}
+
+func TestManager_WriteFile_RejectsEscapingPath(t *testing.T) {
+	m := newManager(t)
+
+	err := m.WriteFile("../../outside.md", "data")
+
+	if err == nil {
+		t.Fatal("expected error for escaping path, got nil")
+	}
+}
+
+
+func TestManager_ReadFile_AcceptsValidRelativePaths(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"simple", "notes.md"},
+		{"nested", "a/b/c.md"},
+		{"redundant dot", "./notes.md"},
+		{"non-escaping parent", "a/../notes.md"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			m := vault.NewManager(dir)
+			writeFixture(t, dir, "notes.md", "content")
+
+			_, err := m.ReadFile(tt.path)
+
+			if err != nil {
+				t.Fatalf("expected no error for %q, got %v", tt.path, err)
+			}
+		})
+	}
+}
+
+// ListVault
+
+func TestManager_ListVault_ListsFilesAtRoot(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "a.md", "content")
+	writeFixture(t, dir, "b.md", "content")
+
+	entries, err := m.ListVault("", false)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	paths := make(map[string]string)
+	for _, e := range entries {
+		paths[e.Path] = e.Type
+	}
+	if paths["a.md"] != "file" {
+		t.Errorf("expected a.md as file, got %q", paths["a.md"])
+	}
+	if paths["b.md"] != "file" {
+		t.Errorf("expected b.md as file, got %q", paths["b.md"])
+	}
+}
+
+func TestManager_ListVault_RecursiveWalksSubtrees(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "a.md", "content")
+	writeFixture(t, dir, "sub/b.md", "content")
+
+	entries, err := m.ListVault("", true)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	paths := make(map[string]string)
+	for _, e := range entries {
+		paths[e.Path] = e.Type
+	}
+	if paths["a.md"] != "file" {
+		t.Errorf("expected a.md as file")
+	}
+	if paths["sub/b.md"] != "file" {
+		t.Errorf("expected sub/b.md as file")
+	}
+}
+
+func TestManager_ListVault_NonRecursiveShowsDirEntry(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "sub/b.md", "content")
+
+	entries, err := m.ListVault("", false)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	paths := make(map[string]string)
+	for _, e := range entries {
+		paths[e.Path] = e.Type
+	}
+	if paths["sub"] != "dir" {
+		t.Errorf("expected sub as dir entry, got %q", paths["sub"])
+	}
+	if _, found := paths["sub/b.md"]; found {
+		t.Error("non-recursive should not include nested file sub/b.md")
+	}
+}
+
+func TestManager_ListVault_RejectsEscapingPath(t *testing.T) {
+	m := newManager(t)
+
+	_, err := m.ListVault("../../outside", false)
+
+	if err == nil {
+		t.Fatal("expected error for escaping path, got nil")
+	}
+}
+
+// ReadFilePartial
+
+func TestManager_ReadFilePartial_ReturnsAtMostMaxChars(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "big.md", "abcdefghij") // 10 bytes
+
+	got, err := m.ReadFilePartial("big.md", 5)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "abcde" {
+		t.Fatalf("want %q, got %q", "abcde", got)
+	}
+}
+
+func TestManager_ReadFilePartial_ReturnsFullContentWhenSmallerThanLimit(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "small.md", "hi")
+
+	got, err := m.ReadFilePartial("small.md", 1000)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "hi" {
+		t.Fatalf("want %q, got %q", "hi", got)
+	}
+}
+
+func TestManager_ReadFilePartial_RejectsEscapingPath(t *testing.T) {
+	m := newManager(t)
+
+	_, err := m.ReadFilePartial("../../etc/passwd", 100)
+
+	if err == nil {
+		t.Fatal("expected error for escaping path, got nil")
+	}
+}
+
+// MoveFile
+
+func TestManager_MoveFile_MovesFileToNewPath(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "old.md", "content")
+
+	err := m.MoveFile("old.md", "new/path/new.md")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// old should not exist
+	if _, statErr := os.Stat(filepath.Join(dir, "old.md")); !os.IsNotExist(statErr) {
+		t.Error("old.md should no longer exist")
+	}
+	// new should exist with same content
+	data, readErr := os.ReadFile(filepath.Join(dir, "new/path/new.md"))
+	if readErr != nil {
+		t.Fatalf("new file not found: %v", readErr)
+	}
+	if string(data) != "content" {
+		t.Errorf("want %q, got %q", "content", string(data))
+	}
+}
+
+func TestManager_MoveFile_ErrorsWhenSourceDoesNotExist(t *testing.T) {
+	m := newManager(t)
+
+	err := m.MoveFile("nonexistent.md", "dest.md")
+
+	if err == nil {
+		t.Fatal("expected error for missing source, got nil")
+	}
+}
+
+func TestManager_MoveFile_RejectsEscapingFromPath(t *testing.T) {
+	m := newManager(t)
+
+	err := m.MoveFile("../../outside.md", "dest.md")
+
+	if err == nil {
+		t.Fatal("expected error for escaping from path, got nil")
+	}
+}
+
+func TestManager_MoveFile_RejectsEscapingToPath(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "src.md", "x")
+
+	err := m.MoveFile("src.md", "../../outside.md")
+
+	if err == nil {
+		t.Fatal("expected error for escaping to path, got nil")
+	}
+}
+
+// DeleteItem
+
+func TestManager_DeleteItem_DeletesAFile(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "page.md", "content")
+
+	err := m.DeleteItem("page.md", false)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "page.md")); !os.IsNotExist(statErr) {
+		t.Error("page.md should no longer exist")
+	}
+}
+
+func TestManager_DeleteItem_ErrorsOnNonEmptyDirWithoutRecursive(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "sub/page.md", "content")
+
+	err := m.DeleteItem("sub", false)
+
+	if err == nil {
+		t.Fatal("expected error for non-empty dir without recursive, got nil")
+	}
+}
+
+func TestManager_DeleteItem_RecursiveDeletesNonEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "sub/page.md", "content")
+
+	err := m.DeleteItem("sub", true)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "sub")); !os.IsNotExist(statErr) {
+		t.Error("sub/ should no longer exist")
+	}
+}
+
+func TestManager_DeleteItem_RejectsEscapingPath(t *testing.T) {
+	m := newManager(t)
+
+	err := m.DeleteItem("../../outside", false)
+
+	if err == nil {
+		t.Fatal("expected error for escaping path, got nil")
+	}
+}
+
 // EnsureSchema
+
+func TestManager_SearchPages_FindsMatchInAttachmentSidecar(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "_attachments/photo-20260416-abc123.png.meta.json",
+		`{"id":"att1","original_name":"photo.png","media_type":"image/png","description":"a sunset over mountains","uploaded_at":"2026-04-16T00:00:00Z"}`)
+
+	results, err := m.SearchPages("sunset", 10)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].Path != "_attachments/photo-20260416-abc123.png" {
+		t.Errorf("want attachment path, got %q", results[0].Path)
+	}
+	if !strings.Contains(results[0].Snippet, "sunset") {
+		t.Errorf("want snippet containing match, got %q", results[0].Snippet)
+	}
+}
+
+func TestManager_SearchPages_FindsAttachmentByOriginalName(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "_attachments/report-20260416-abc123.pdf.meta.json",
+		`{"id":"att2","original_name":"q1-report.pdf","media_type":"application/pdf","description":"Q1 financial summary","uploaded_at":"2026-04-16T00:00:00Z"}`)
+
+	results, err := m.SearchPages("q1-report", 10)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].Path != "_attachments/report-20260416-abc123.pdf" {
+		t.Errorf("want attachment path, got %q", results[0].Path)
+	}
+}
+
+func TestManager_SearchPages_SidecarAndMdResultsRespectMaxResults(t *testing.T) {
+	dir := t.TempDir()
+	m := vault.NewManager(dir)
+	writeFixture(t, dir, "notes.md", "go programming notes")
+	writeFixture(t, dir, "_attachments/go-20260416-abc.png.meta.json",
+		`{"description":"go gopher mascot image"}`)
+
+	results, err := m.SearchPages("go", 1)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want exactly 1 result (maxResults=1), got %d", len(results))
+	}
+}
 
 func TestManager_EnsureSchema_CreatesFileWhenAbsent(t *testing.T) {
 	m := newManager(t)

@@ -8,12 +8,14 @@ import (
 )
 
 type Config struct {
-	VaultPath      string     `yaml:"vault_path"`
-	ServerPort     int        `yaml:"server_port"`
-	AnthropicAPIKey string    `yaml:"anthropic_api_key"`
-	PebblePath    string     `yaml:"pebble_path"`
-	Auth           AuthConfig `yaml:"auth"`
-	Dream          DreamConfig `yaml:"dream"`
+	VaultPath       string      `yaml:"vault_path"`
+	ServerPort      int         `yaml:"server_port"`
+	AnthropicAPIKey string      `yaml:"anthropic_api_key"`
+	PebblePath      string      `yaml:"pebble_path"`
+	ChatModel       string      `yaml:"chat_model"`
+	DreamModel      string      `yaml:"dream_model"`
+	Auth            AuthConfig  `yaml:"auth"`
+	Dream           DreamConfig `yaml:"dream"`
 }
 
 type AuthConfig struct {
@@ -55,6 +57,12 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if c.ChatModel == "" {
+		c.ChatModel = "claude-haiku-4-5-20251001"
+	}
+	if c.DreamModel == "" {
+		c.DreamModel = "claude-sonnet-4-6"
+	}
 	if c.VaultPath == "" {
 		return fmt.Errorf("VAULT_PATH is required")
 	}
