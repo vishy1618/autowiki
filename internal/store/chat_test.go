@@ -50,6 +50,35 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 		}
 	})
 
+	t.Run("ResolveSession_BumpsLastActiveAt_SoWindowSlides", func(t *testing.T) {
+		// Arrange — create a session with LastActiveAt set to 25 minutes ago.
+		// Without bumping, a second ResolveSession 10 minutes later (35 min total)
+		// would create a new session even though the gap between calls is only 10 min.
+		first, err := cs.ResolveSession()
+		if err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		aged := first
+		aged.LastActiveAt = time.Now().Add(-25 * time.Minute)
+		if err := cs.UpdateSession(aged); err != nil {
+			t.Fatalf("setup UpdateSession: %v", err)
+		}
+
+		// Act — ResolveSession should return the same session AND update LastActiveAt.
+		second, err := cs.ResolveSession()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Assert — same session, and LastActiveAt is now recent (within last second).
+		if second.ID != first.ID {
+			t.Errorf("expected same session ID %q, got %q", first.ID, second.ID)
+		}
+		if time.Since(second.LastActiveAt) > time.Second {
+			t.Errorf("expected LastActiveAt to be bumped to now, got %v", second.LastActiveAt)
+		}
+	})
+
 	t.Run("ResolveSession_WhenSessionStale_CreatesNewSession", func(t *testing.T) {
 		// Arrange — create a session then mark it stale
 		first, err := cs.ResolveSession()

@@ -32,6 +32,8 @@ func (m *MemChatStore) ResolveSession() (ChatSession, error) {
 	if len(m.sessions) > 0 {
 		last := m.sessions[len(m.sessions)-1]
 		if time.Since(last.LastActiveAt) <= sessionTimeout {
+			last.LastActiveAt = time.Now()
+			m.sessions[len(m.sessions)-1] = last
 			return last, nil
 		}
 	}

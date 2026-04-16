@@ -102,6 +102,10 @@ func (p *PebbleChatStore) ResolveSession() (ChatSession, error) {
 			return ChatSession{}, err
 		}
 		if found && time.Since(last.LastActiveAt) <= sessionTimeout {
+			last.LastActiveAt = time.Now()
+			if err := p.setJSON(sessionMetaKey(last.ID), last); err != nil {
+				return ChatSession{}, err
+			}
 			return last, nil
 		}
 	}
