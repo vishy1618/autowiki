@@ -255,7 +255,46 @@ Returns dream state metadata.
 
 ---
 
-## 8. Build & Development Workflow
+## 8. Prompt Caching
+
+Every request to the Anthropic API includes a large, static payload: the system prompt (identity, instructions, tool-use guidance, vault index) and the full tool definitions for `read_page`, `search_vault`, and `save_to_vault`. This content is identical across all turns in a conversation and changes only when the vault index is updated.
+
+Anthropic's prompt caching feature allows these static portions to be cached server-side, so they are not re-tokenised and re-billed on every request. Cached tokens are charged at a significantly lower rate (~10% of the normal input token price after the first cache write).
+
+### What to cache
+
+| Payload | Rationale |
+|---|---|
+| System prompt (base instructions + vault index) | Entirely static within a session; the vault index changes rarely |
+| Tool definitions (`read_page`, `search_vault`, `save_to_vault`) | Fixed schemas, never change at runtime |
+
+### How to implement
+
+Anthropic's caching API uses a `cache_control: { type: "ephemeral" }` marker on content blocks. The cache is keyed on the exact bytes of everything up to and including the marked block, so the marker must be placed at the boundary between the static prefix and the dynamic per-turn messages.
+
+Concretely:
+
+1. **System prompt**: Set `cache_control` on the system prompt string. In the API request body this means sending `system` as a list of content blocks rather than a plain string, with the final block carrying `"cache_control": {"type": "ephemeral"}`.
+
+2. **Tool definitions**: Mark the last tool definition in the `tools` array with `"cache_control": {"type": "ephemeral"}`. Everything before it (all three tool schemas) is then included in the cache prefix.
+
+Both markers can coexist in a single request; Anthropic allows up to four cache breakpoints per request.
+
+### Cache lifetime and invalidation
+
+Anthropic's ephemeral cache has a **5-minute TTL** that resets on each cache hit. In practice this means:
+
+- Active conversations (turns < 5 minutes apart) will hit the cache on every turn after the first.
+- The dream state goroutine, which runs nightly and submits a fresh vault snapshot, will almost always incur a cache miss and write a new cache entry.
+- If the vault index is updated mid-conversation (e.g. after a `save_to_vault` call changes `index.md`), the system prompt changes and the cache entry is effectively invalidated on the next request.
+
+### Expected savings
+
+The system prompt + tool schemas currently total roughly 800–1,200 tokens per request. With caching active, only the first request in each 5-minute window pays the full input token price; subsequent requests in the window pay the cache-read rate. For an active chat session this reduces LLM costs by roughly 80–90% on the static prefix.
+
+---
+
+## 9. Build & Development Workflow
 
 ### Production Build
 
