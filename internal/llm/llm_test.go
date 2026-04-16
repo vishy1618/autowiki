@@ -702,6 +702,40 @@ func TestClient_Stream_SystemPromptInstructsWikilinksAndSchemaConventions(t *tes
 	body.Close()
 }
 
+func TestClient_Stream_SystemPromptForbidsClaimingCannotViewImages(t *testing.T) {
+	// The system prompt must explicitly tell the model to look up the sidecar
+	// rather than deflecting with "I can't view images."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System string `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		// Must instruct the model to search before claiming it cannot see the image.
+		if !strings.Contains(body.System, "search_vault") || !strings.Contains(body.System, ".meta.json") {
+			t.Errorf("expected system prompt to tell model to use search_vault/sidecar, got: %q", body.System)
+		}
+		// Must explicitly prohibit the "I can't view images" deflection before
+		// the model has searched the vault for the attachment description.
+		lower := strings.ToLower(body.System)
+		if !strings.Contains(lower, "do not say you cannot") && !strings.Contains(lower, "never say you cannot") {
+			t.Errorf("expected system prompt to explicitly prohibit claiming it cannot view images, got: %q", body.System)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
 func TestClient_Stream_SystemPromptExplainsAttachmentSidecars(t *testing.T) {
 	// The system prompt must explain the sidecar convention so the model knows
 	// to use search_vault or read_page on .meta.json to recall attachment details.
@@ -717,6 +751,69 @@ func TestClient_Stream_SystemPromptExplainsAttachmentSidecars(t *testing.T) {
 		}
 		if !strings.Contains(body.System, ".meta.json") {
 			t.Errorf("expected system prompt to mention .meta.json sidecar convention, got: %q", body.System)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
+func TestClient_Stream_IncludesSaveAttachmentNotesTool(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		found := false
+		for _, tool := range body.Tools {
+			if tool.Name == "save_attachment_notes" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected save_attachment_notes tool in request")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
+func TestClient_Stream_SystemPromptRequiresSaveAttachmentNotesForPDFs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System string `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		lower := strings.ToLower(body.System)
+		if !strings.Contains(lower, "save_attachment_notes") {
+			t.Errorf("expected system prompt to mention save_attachment_notes for PDFs, got: %q", body.System)
+		}
+		if !strings.Contains(lower, "pdf") {
+			t.Errorf("expected system prompt to mention PDF context for save_attachment_notes, got: %q", body.System)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
