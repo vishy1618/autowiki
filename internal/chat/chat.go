@@ -390,12 +390,22 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 // scanStream reads an Anthropic SSE body, forwarding text deltas to w and
 // accumulating any tool call inputs. It returns the assembled text and all
 // tool calls emitted in this stream (there may be more than one).
+//
+// Built-in Anthropic tools (web_fetch, web_search) emit server_tool_use blocks
+// instead of tool_use. Anthropic executes these server-side and streams the
+// result back in the same response — no Go dispatch is needed. scanStream
+// emits a status SSE event when a server_tool_use block completes and does NOT
+// add them to toolCalls.
 func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher http.Flusher) streamResult {
 	var assembled strings.Builder
 	var toolJSONBuf strings.Builder
 	var currentID, currentName string
 	var calls []toolCall
 	inToolUseBlock := false
+
+	var serverToolJSONBuf strings.Builder
+	var serverToolName string
+	inServerToolUseBlock := false
 
 	scanner := bufio.NewScanner(body)
 	var lastEvent string
@@ -420,11 +430,19 @@ func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher
 				} `json:"content_block"`
 			}
 			if err := json.Unmarshal([]byte(raw), &payload); err == nil {
-				inToolUseBlock = payload.ContentBlock.Type == "tool_use"
-				if inToolUseBlock {
+				switch payload.ContentBlock.Type {
+				case "tool_use":
+					inToolUseBlock = true
 					currentID = payload.ContentBlock.ID
 					currentName = payload.ContentBlock.Name
 					toolJSONBuf.Reset()
+				case "server_tool_use":
+					inServerToolUseBlock = true
+					serverToolName = payload.ContentBlock.Name
+					serverToolJSONBuf.Reset()
+				default:
+					inToolUseBlock = false
+					inServerToolUseBlock = false
 				}
 			}
 
@@ -438,8 +456,12 @@ func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher
 						flusher.Flush()
 					}
 				}
-				if inputJSON != "" && inToolUseBlock {
-					toolJSONBuf.WriteString(inputJSON)
+				if inputJSON != "" {
+					if inToolUseBlock {
+						toolJSONBuf.WriteString(inputJSON)
+					} else if inServerToolUseBlock {
+						serverToolJSONBuf.WriteString(inputJSON)
+					}
 				}
 			}
 
@@ -450,8 +472,15 @@ func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher
 					name: currentName,
 					json: toolJSONBuf.String(),
 				})
+			} else if inServerToolUseBlock {
+				statusMsg := serverToolStatusMessage(serverToolName, serverToolJSONBuf.String())
+				writeSSE(w, "status", fmt.Sprintf(`{"message":%q}`, statusMsg))
+				if canFlush {
+					flusher.Flush()
+				}
 			}
 			inToolUseBlock = false
+			inServerToolUseBlock = false
 		}
 	}
 
@@ -459,6 +488,25 @@ func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher
 		assembled: assembled.String(),
 		toolCalls: calls,
 		scanErr:   scanner.Err(),
+	}
+}
+
+// serverToolStatusMessage returns the status message text for a server_tool_use
+// block. For web_fetch it includes the URL; for web_search it is generic.
+func serverToolStatusMessage(toolName, toolJSON string) string {
+	switch toolName {
+	case "web_fetch":
+		var input struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal([]byte(toolJSON), &input); err == nil && input.URL != "" {
+			return "Fetching " + input.URL + "\u2026"
+		}
+		return "Fetching page\u2026"
+	case "web_search":
+		return "Searching the web\u2026"
+	default:
+		return "Working\u2026"
 	}
 }
 

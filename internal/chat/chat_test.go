@@ -1144,6 +1144,158 @@ func TestHandler_PostChat_DispatchesMultipleToolCallsInOneResponse(t *testing.T)
 	}
 }
 
+// ── Group: server_tool_use (web_fetch / web_search built-in tools) ───────────
+
+// webFetchServerToolUseSSE simulates a stream where Anthropic executes web_fetch
+// server-side: server_tool_use block → result block → text response, all in one stream.
+const webFetchServerToolUseSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_wf1","name":"web_fetch","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"url\":\"https://example.com/page\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"web_fetch_tool_result","tool_use_id":"srvtoolu_wf1"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Here is the page content."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+// webSearchServerToolUseSSE simulates a stream where Anthropic executes web_search
+// server-side: server_tool_use block → result block → text response, all in one stream.
+const webSearchServerToolUseSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_ws1","name":"web_search","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"latest Go release\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_result","tool_use_id":"srvtoolu_ws1"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Here are the search results."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":2}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func TestHandler_PostChat_EmitsStatusEventWithURLOnWebFetch(t *testing.T) {
+	// Arrange — stream contains a server_tool_use web_fetch block.
+	h := newTestHandler(t, &stubStreamer{body: webFetchServerToolUseSSE})
+	form := url.Values{"message": {"fetch https://example.com/page"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — status event containing the URL was emitted.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	events := parseSSE(t, w.Body.String())
+	hasStatus := false
+	for _, ev := range events {
+		if ev.event == "status" && strings.Contains(ev.data, "https://example.com/page") {
+			hasStatus = true
+			break
+		}
+	}
+	if !hasStatus {
+		t.Errorf("expected status SSE event containing URL, got events: %v", events)
+	}
+}
+
+func TestHandler_PostChat_EmitsStatusEventOnWebSearch(t *testing.T) {
+	// Arrange — stream contains a server_tool_use web_search block.
+	h := newTestHandler(t, &stubStreamer{body: webSearchServerToolUseSSE})
+	form := url.Values{"message": {"look up the latest Go release"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — status event containing "searching" was emitted.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	events := parseSSE(t, w.Body.String())
+	hasStatus := false
+	for _, ev := range events {
+		if ev.event == "status" && strings.Contains(strings.ToLower(ev.data), "searching") {
+			hasStatus = true
+			break
+		}
+	}
+	if !hasStatus {
+		t.Errorf("expected status SSE event containing 'searching', got events: %v", events)
+	}
+}
+
+func TestHandler_PostChat_ServerToolUseBlockDoesNotDispatchAsCustomTool(t *testing.T) {
+	// Arrange — stream has server_tool_use + text (all in one stream, no second call needed).
+	// If server_tool_use were mistakenly added to toolCalls, the handler would
+	// attempt dispatch, store "unknown tool: web_fetch", and re-loop — ending
+	// with an error event instead of done.
+	h := newTestHandler(t, &stubStreamer{body: webFetchServerToolUseSSE})
+	form := url.Values{"message": {"fetch this page"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — response ends with done (not error), and no "unknown tool" result stored.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	events := parseSSE(t, w.Body.String())
+	if len(events) == 0 || events[len(events)-1].event != "done" {
+		t.Errorf("expected last event to be done, got events: %v", events)
+	}
+	for _, ev := range events {
+		if ev.event == "error" {
+			t.Errorf("unexpected error event: %v", ev)
+		}
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 type sseEvent struct {

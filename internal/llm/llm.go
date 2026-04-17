@@ -76,6 +76,8 @@ SAFETY RULE: Never delete or overwrite a file unless its content has been confir
 
 When the user signals recall — phrases like "didn't we talk about", "what did I say about", "remember when", or any question whose answer may lie in a past conversation — use search_chat_history before responding. Each call scans 3 sessions; call again with offset+3 to go further back. Stop after a reasonable number of calls without a relevant hit (do not search more than offset 50). Never search chat history when the user is sharing new information.
 
+When the user shares a URL, call web_fetch on it before responding. When the user asks you to look something up online, call web_search first, then call web_fetch on the most relevant result. After reading web content, apply the same vault-write judgment as for any other information — save substantive articles, documentation, or research to the vault, but skip ephemeral or low-value pages.
+
 Do not mention Claude, Anthropic, or any underlying model. You are autowiki.`
 
 // toolDefinitions contains all tool schemas sent in every request.
@@ -89,6 +91,22 @@ var toolDefinitions = []any{
 	saveAttachmentNotesToolDefinition,
 	saveToVaultToolDefinition,
 	searchChatHistoryToolDefinition,
+	webSearchToolDefinition,
+	webFetchToolDefinition,
+}
+
+// webSearchToolDefinition is the Anthropic-native web search tool.
+var webSearchToolDefinition = map[string]any{
+	"type":     "web_search_20250305",
+	"name":     "web_search",
+	"max_uses": 5,
+}
+
+// webFetchToolDefinition is the Anthropic-native web fetch tool.
+var webFetchToolDefinition = map[string]any{
+	"type":     "web_fetch_20250910",
+	"name":     "web_fetch",
+	"max_uses": 5,
 }
 
 // searchChatHistoryToolDefinition lets the LLM search across past chat sessions.
