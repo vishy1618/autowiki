@@ -250,7 +250,11 @@ export default function Home() {
         body: body.toString(),
       });
 
-      if (!resp.ok || !resp.body) {
+      if (!resp.ok) {
+        const bodyText = await resp.text().catch(() => "");
+        throw new Error(bodyText.trim() || `Server returned ${resp.status}`);
+      }
+      if (!resp.body) {
         throw new Error(`Server returned ${resp.status}`);
       }
 
@@ -532,7 +536,7 @@ const MessageThread = memo(function MessageThread({
                 {msg.statusMessage && (
                   <em style={styles.statusLine}>{msg.statusMessage}</em>
                 )}
-                <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.content}</Markdown>
+                <div className="md"><Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.content}</Markdown></div>
                 {msg.streaming && <span style={styles.cursor}>▌</span>}
                 {!msg.streaming && msg.vaultChanges && msg.vaultChanges.length > 0 && (
                   <details style={styles.vaultSummary}>
@@ -546,7 +550,7 @@ const MessageThread = memo(function MessageThread({
                 )}
               </div>
             ) : (
-              <p style={styles.bubbleText}>{msg.content}</p>
+              <p style={{ ...styles.bubbleText, whiteSpace: "pre-wrap" }}>{msg.content}</p>
             )}
           </div>
         );
@@ -558,6 +562,12 @@ const MessageThread = memo(function MessageThread({
 });
 
 const markdownComponents = {
+  // External links open in new tab.
+  a: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    // eslint-disable-next-line jsx-a11y/anchor-has-content
+    <a target="_blank" rel="noreferrer" {...props} />
+  ),
+  // Tables need explicit styles because Tailwind preflight collapses borders.
   table: (props: React.HTMLAttributes<HTMLTableElement>) => (
     <table style={styles.mdTable} {...props} />
   ),
@@ -644,7 +654,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   bubbleText: {
     margin: 0,
-    whiteSpace: "pre-wrap",
   },
   cursor: {
     animation: "blink 1s step-end infinite",
