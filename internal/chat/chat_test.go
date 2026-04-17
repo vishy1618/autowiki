@@ -480,6 +480,33 @@ func TestHandler_PostChat_PersistsNonEmptyPlaceholderOnLLMFailure(t *testing.T) 
 	}
 }
 
+func TestHandler_PostChat_LLMFailureBodyMatchesStoredPlaceholder(t *testing.T) {
+	// Arrange
+	cs := store.NewMemChatStore()
+	vm := vault.NewManager(t.TempDir())
+	h := chat.NewHandler(cs, &stubStreamer{err: errors.New("llm down")}, vm)
+
+	form := url.Values{"message": {"hello"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — the HTTP response body must equal the stored placeholder so the
+	// frontend can display it directly in the assistant bubble without a separate
+	// error banner.
+	session, _ := cs.ResolveSession()
+	msgs, _ := cs.ListMessages(session.ID)
+	placeholder := msgs[1].Content
+	body := strings.TrimSpace(w.Body.String())
+	if body != placeholder {
+		t.Errorf("response body %q does not match stored placeholder %q", body, placeholder)
+	}
+}
+
 func TestHandler_PostChat_RateLimitReturns429AndStoresNoRetryPlaceholder(t *testing.T) {
 	// Arrange — streamer fails with a 429 rate-limit error.
 	cs := store.NewMemChatStore()
@@ -521,6 +548,31 @@ func TestHandler_PostChat_RateLimitReturns429AndStoresNoRetryPlaceholder(t *test
 	}
 	if placeholder == "" {
 		t.Error("placeholder must be non-empty so Anthropic accepts it in subsequent requests")
+	}
+}
+
+func TestHandler_PostChat_RateLimitBodyMatchesStoredPlaceholder(t *testing.T) {
+	// Arrange
+	cs := store.NewMemChatStore()
+	vm := vault.NewManager(t.TempDir())
+	h := chat.NewHandler(cs, &stubStreamer{err: errors.New("anthropic API returned 429: rate_limit_error")}, vm)
+
+	form := url.Values{"message": {"fetch this url"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — response body equals the stored placeholder.
+	session, _ := cs.ResolveSession()
+	msgs, _ := cs.ListMessages(session.ID)
+	placeholder := msgs[1].Content
+	body := strings.TrimSpace(w.Body.String())
+	if body != placeholder {
+		t.Errorf("response body %q does not match stored placeholder %q", body, placeholder)
 	}
 }
 

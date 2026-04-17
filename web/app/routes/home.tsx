@@ -251,8 +251,16 @@ export default function Home() {
       });
 
       if (!resp.ok) {
-        const bodyText = await resp.text().catch(() => "");
-        throw new Error(bodyText.trim() || `Server returned ${resp.status}`);
+        const bodyText = (await resp.text().catch(() => "")).trim();
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && isMessage(last) && last.role === "assistant" && last.streaming) {
+            next[next.length - 1] = { ...last, content: bodyText, streaming: false, createdAt: new Date().toISOString() };
+          }
+          return next;
+        });
+        return;
       }
       if (!resp.body) {
         throw new Error(`Server returned ${resp.status}`);
@@ -337,12 +345,16 @@ export default function Home() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
-      // Finalise the streaming bubble.
+      // Finalise or discard the streaming bubble.
       setMessages((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
         if (last && isMessage(last) && last.role === "assistant" && last.streaming) {
-          next[next.length - 1] = { ...last, streaming: false, createdAt: new Date().toISOString() };
+          if (last.content) {
+            next[next.length - 1] = { ...last, streaming: false, createdAt: new Date().toISOString() };
+          } else {
+            next.pop();
+          }
         }
         return next;
       });

@@ -139,20 +139,22 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("LLM stream failed", "error", err, "session_id", session.ID)
 		if isRateLimitError(err) {
+			const rateLimitMsg = "I was unable to complete this request because the content was too large. I cannot retry this."
 			_ = h.store.AppendMessage(store.Message{
 				SessionID: session.ID,
 				Role:      "assistant",
-				Content:   "I was unable to complete this request because the content was too large. I cannot retry this.",
+				Content:   rateLimitMsg,
 			})
-			http.Error(w, "rate limit exceeded — content too large to process", http.StatusTooManyRequests)
+			http.Error(w, rateLimitMsg, http.StatusTooManyRequests)
 			return
 		}
+		const genericErrMsg = "I encountered an error and could not respond. Please try again."
 		_ = h.store.AppendMessage(store.Message{
 			SessionID: session.ID,
 			Role:      "assistant",
-			Content:   "I encountered an error and could not respond. Please try again.",
+			Content:   genericErrMsg,
 		})
-		http.Error(w, "llm error", http.StatusInternalServerError)
+		http.Error(w, genericErrMsg, http.StatusInternalServerError)
 		return
 	}
 
