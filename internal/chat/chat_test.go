@@ -480,6 +480,50 @@ func TestHandler_PostChat_PersistsNonEmptyPlaceholderOnLLMFailure(t *testing.T) 
 	}
 }
 
+func TestHandler_PostChat_RateLimitReturns429AndStoresNoRetryPlaceholder(t *testing.T) {
+	// Arrange — streamer fails with a 429 rate-limit error.
+	cs := store.NewMemChatStore()
+	vm := vault.NewManager(t.TempDir())
+	rateLimitErr := errors.New("anthropic API returned 429: rate_limit_error")
+	h := chat.NewHandler(cs, &stubStreamer{err: rateLimitErr}, vm)
+
+	form := url.Values{"message": {"fetch this url please"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — handler returns 429, not 500.
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+
+	// Assert — stored placeholder does not tell LLM to "try again".
+	// If it did, the LLM would re-attempt the same fetch on the next message
+	// and hit 429 again, causing a permanent stuck loop.
+	session, err := cs.ResolveSession()
+	if err != nil {
+		t.Fatalf("ResolveSession: %v", err)
+	}
+	msgs, err := cs.ListMessages(session.ID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages (user + assistant placeholder), got %d", len(msgs))
+	}
+	placeholder := msgs[1].Content
+	if strings.Contains(strings.ToLower(placeholder), "try again") {
+		t.Errorf("placeholder must not encourage retry, got: %q", placeholder)
+	}
+	if placeholder == "" {
+		t.Error("placeholder must be non-empty so Anthropic accepts it in subsequent requests")
+	}
+}
+
 func TestHandler_PostChat_UnknownAttachmentIDIsSkipped(t *testing.T) {
 	// Arrange — attachment ID that has no sidecar in the vault.
 	h := newTestHandler(t, &stubStreamer{body: minimalAnthropicSSE})

@@ -138,6 +138,15 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	body, err := h.streamer.Stream(r.Context(), history, indexMD, schemaContent, pdfAttachments)
 	if err != nil {
 		slog.Error("LLM stream failed", "error", err, "session_id", session.ID)
+		if isRateLimitError(err) {
+			_ = h.store.AppendMessage(store.Message{
+				SessionID: session.ID,
+				Role:      "assistant",
+				Content:   "I was unable to complete this request because the content was too large. I cannot retry this.",
+			})
+			http.Error(w, "rate limit exceeded — content too large to process", http.StatusTooManyRequests)
+			return
+		}
 		_ = h.store.AppendMessage(store.Message{
 			SessionID: session.ID,
 			Role:      "assistant",
@@ -631,4 +640,9 @@ func extractDelta(raw string) (string, string, error) {
 		return "", payload.Delta.PartialJSON, nil
 	}
 	return "", "", nil
+}
+
+// isRateLimitError reports whether err is an Anthropic 429 response.
+func isRateLimitError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "429")
 }
