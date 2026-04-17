@@ -141,7 +141,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 		_ = h.store.AppendMessage(store.Message{
 			SessionID: session.ID,
 			Role:      "assistant",
-			Content:   "",
+			Content:   "I encountered an error and could not respond. Please try again.",
 		})
 		http.Error(w, "llm error", http.StatusInternalServerError)
 		return

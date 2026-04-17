@@ -434,7 +434,7 @@ func TestHandler_PostChat_StoresAssistantContentBlocksAndToolResultAfterVaultWri
 	}
 }
 
-func TestHandler_PostChat_PersistsEmptyAssistantMessageOnLLMFailure(t *testing.T) {
+func TestHandler_PostChat_PersistsNonEmptyPlaceholderOnLLMFailure(t *testing.T) {
 	// Arrange — streamer always fails so the LLM is unavailable.
 	cs := store.NewMemChatStore()
 	vm := vault.NewManager(t.TempDir())
@@ -454,9 +454,10 @@ func TestHandler_PostChat_PersistsEmptyAssistantMessageOnLLMFailure(t *testing.T
 		t.Fatalf("expected 500, got %d", w.Code)
 	}
 
-	// Assert — store contains two messages: the user message and an empty
+	// Assert — store contains two messages: the user message and a non-empty
 	// assistant placeholder. Without the placeholder the next request would
-	// send two consecutive user messages, which Anthropic rejects with 400.
+	// send two consecutive user messages (Anthropic rejects that with 400).
+	// Without non-empty content, Anthropic also rejects empty assistant turns.
 	session, err := cs.ResolveSession()
 	if err != nil {
 		t.Fatalf("ResolveSession: %v", err)
@@ -466,7 +467,7 @@ func TestHandler_PostChat_PersistsEmptyAssistantMessageOnLLMFailure(t *testing.T
 		t.Fatalf("ListMessages: %v", err)
 	}
 	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages (user + empty assistant), got %d: %v", len(msgs), msgs)
+		t.Fatalf("expected 2 messages (user + assistant placeholder), got %d: %v", len(msgs), msgs)
 	}
 	if msgs[0].Role != "user" {
 		t.Errorf("expected first message role 'user', got %q", msgs[0].Role)
@@ -474,8 +475,8 @@ func TestHandler_PostChat_PersistsEmptyAssistantMessageOnLLMFailure(t *testing.T
 	if msgs[1].Role != "assistant" {
 		t.Errorf("expected second message role 'assistant', got %q", msgs[1].Role)
 	}
-	if msgs[1].Content != "" {
-		t.Errorf("expected empty assistant content, got %q", msgs[1].Content)
+	if msgs[1].Content == "" {
+		t.Error("expected non-empty assistant placeholder so Anthropic accepts it in subsequent requests")
 	}
 }
 
