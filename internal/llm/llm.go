@@ -103,10 +103,13 @@ var webSearchToolDefinition = map[string]any{
 }
 
 // webFetchToolDefinition is the Anthropic-native web fetch tool.
+// cache_control is placed here (last in toolDefinitions) so Anthropic caches
+// the entire tool list on every request.
 var webFetchToolDefinition = map[string]any{
-	"type":     "web_fetch_20250910",
-	"name":     "web_fetch",
-	"max_uses": 5,
+	"type":          "web_fetch_20250910",
+	"name":          "web_fetch",
+	"max_uses":      5,
+	"cache_control": map[string]any{"type": "ephemeral"},
 }
 
 // searchChatHistoryToolDefinition lets the LLM search across past chat sessions.
@@ -263,7 +266,7 @@ func (c *Client) StreamWithSystem(ctx context.Context, systemPrompt string, mess
 		Model:     c.cfg.Model,
 		MaxTokens: 4096,
 		Stream:    true,
-		System:    systemPrompt,
+		System:    cachedSystemBlocks(systemPrompt),
 		Messages:  reqMsgs,
 		Tools:     toolDefinitions,
 		ToolChoice: map[string]any{
@@ -308,10 +311,22 @@ type streamRequest struct {
 	Model      string           `json:"model"`
 	MaxTokens  int              `json:"max_tokens"`
 	Stream     bool             `json:"stream"`
-	System     string           `json:"system"`
+	System     any              `json:"system"`
 	Messages   []requestMessage `json:"messages"`
 	Tools      []any            `json:"tools"`
 	ToolChoice map[string]any   `json:"tool_choice"`
+}
+
+// cachedSystemBlocks wraps a system prompt string in a content-block array
+// with cache_control so Anthropic caches it across requests.
+func cachedSystemBlocks(text string) []map[string]any {
+	return []map[string]any{
+		{
+			"type":          "text",
+			"text":          text,
+			"cache_control": map[string]any{"type": "ephemeral"},
+		},
+	}
 }
 
 // toolResultContent holds the parsed fields from a tool_result store message.
@@ -547,7 +562,7 @@ func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD s
 		Model:     c.cfg.Model,
 		MaxTokens: 4096,
 		Stream:    true,
-		System:    system,
+		System:    cachedSystemBlocks(system),
 		Messages:  reqMsgs,
 		Tools:     toolDefinitions,
 		ToolChoice: map[string]any{

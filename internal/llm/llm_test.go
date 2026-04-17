@@ -13,6 +13,22 @@ import (
 	"github.com/suvish/autowiki/internal/store"
 )
 
+// systemBlock is the decoded shape of one element in a cached system array.
+type systemBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// systemText concatenates the text from all blocks in a cached system array,
+// matching the helper used in tests that inspect system prompt content.
+func systemText(blocks []systemBlock) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		sb.WriteString(b.Text)
+	}
+	return sb.String()
+}
+
 // anthropicSSEResponse returns a minimal Anthropic streaming SSE response
 // containing one content_block_delta event followed by a message_stop event.
 func anthropicSSEResponse(delta string) string {
@@ -54,12 +70,12 @@ func TestClient_Stream_YieldsTokenDeltas(t *testing.T) {
 
 		// Validate that a system prompt is included in the request body.
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		if body.System == "" {
+		if systemText(body.System) == "" {
 			t.Error("expected a non-empty system prompt in the request")
 		}
 
@@ -250,16 +266,16 @@ func TestClient_Stream_IncludesIndexMDInSystemPrompt(t *testing.T) {
 	// Arrange
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		if !strings.Contains(body.System, "## Vault Index") {
-			t.Errorf("expected system prompt to contain vault index section, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "## Vault Index") {
+			t.Errorf("expected system prompt to contain vault index section, got: %q", systemText(body.System))
 		}
-		if !strings.Contains(body.System, "existing content") {
-			t.Errorf("expected system prompt to contain indexMD content, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "existing content") {
+			t.Errorf("expected system prompt to contain indexMD content, got: %q", systemText(body.System))
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -281,15 +297,15 @@ func TestClient_Stream_SystemPromptInstructsLLMToMaintainIndex(t *testing.T) {
 	// Arrange — capture the system prompt the client sends.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
 		// The system prompt must tell the LLM to keep index.md current so
 		// that the vault has a live map of content after every ingest.
-		if !strings.Contains(body.System, "index.md") {
-			t.Errorf("expected system prompt to instruct LLM to maintain index.md, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "index.md") {
+			t.Errorf("expected system prompt to instruct LLM to maintain index.md, got: %q", systemText(body.System))
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -530,14 +546,14 @@ func TestClient_Stream_IncludesSearchChatHistoryTool(t *testing.T) {
 func TestClient_Stream_SystemPromptMentionsSearchChatHistory(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		lower := strings.ToLower(body.System)
+		lower := strings.ToLower(systemText(body.System))
 		if !strings.Contains(lower, "search_chat_history") {
-			t.Errorf("expected system prompt to mention search_chat_history, got: %q", body.System)
+			t.Errorf("expected system prompt to mention search_chat_history, got: %q", systemText(body.System))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -681,16 +697,16 @@ func TestClient_Stream_DoesNotInjectPdfIntoToolResultMessage(t *testing.T) {
 func TestClient_Stream_IncludesSchemaInSystemPromptWhenProvided(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		if !strings.Contains(body.System, "## Wiki Schema") {
-			t.Errorf("expected system prompt to contain Wiki Schema section, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "## Wiki Schema") {
+			t.Errorf("expected system prompt to contain Wiki Schema section, got: %q", systemText(body.System))
 		}
-		if !strings.Contains(body.System, "my conventions") {
-			t.Errorf("expected system prompt to contain schema content, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "my conventions") {
+			t.Errorf("expected system prompt to contain schema content, got: %q", systemText(body.System))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -710,13 +726,13 @@ func TestClient_Stream_IncludesSchemaInSystemPromptWhenProvided(t *testing.T) {
 func TestClient_Stream_OmitsSchemaSection_WhenSchemaIsEmpty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		if strings.Contains(body.System, "## Wiki Schema") {
-			t.Errorf("expected no Wiki Schema section when schema is empty, got: %q", body.System)
+		if strings.Contains(systemText(body.System), "## Wiki Schema") {
+			t.Errorf("expected no Wiki Schema section when schema is empty, got: %q", systemText(body.System))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -736,16 +752,16 @@ func TestClient_Stream_OmitsSchemaSection_WhenSchemaIsEmpty(t *testing.T) {
 func TestClient_Stream_SystemPromptInstructsWikilinksAndSchemaConventions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		if !strings.Contains(body.System, "[[wikilinks]]") {
-			t.Errorf("expected system prompt to mention [[wikilinks]], got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "[[wikilinks]]") {
+			t.Errorf("expected system prompt to mention [[wikilinks]], got: %q", systemText(body.System))
 		}
-		if !strings.Contains(body.System, "schema.md") {
-			t.Errorf("expected system prompt to mention schema.md, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "schema.md") {
+			t.Errorf("expected system prompt to mention schema.md, got: %q", systemText(body.System))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -767,20 +783,20 @@ func TestClient_Stream_SystemPromptForbidsClaimingCannotViewImages(t *testing.T)
 	// rather than deflecting with "I can't view images."
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
 		// Must instruct the model to search before claiming it cannot see the image.
-		if !strings.Contains(body.System, "search_vault") || !strings.Contains(body.System, ".meta.json") {
-			t.Errorf("expected system prompt to tell model to use search_vault/sidecar, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "search_vault") || !strings.Contains(systemText(body.System), ".meta.json") {
+			t.Errorf("expected system prompt to tell model to use search_vault/sidecar, got: %q", systemText(body.System))
 		}
 		// Must explicitly prohibit the "I can't view images" deflection before
 		// the model has searched the vault for the attachment description.
-		lower := strings.ToLower(body.System)
+		lower := strings.ToLower(systemText(body.System))
 		if !strings.Contains(lower, "do not say you cannot") && !strings.Contains(lower, "never say you cannot") {
-			t.Errorf("expected system prompt to explicitly prohibit claiming it cannot view images, got: %q", body.System)
+			t.Errorf("expected system prompt to explicitly prohibit claiming it cannot view images, got: %q", systemText(body.System))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -801,16 +817,16 @@ func TestClient_Stream_SystemPromptExplainsAttachmentSidecars(t *testing.T) {
 	// to use search_vault or read_page on .meta.json to recall attachment details.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		if !strings.Contains(body.System, "_attachments") {
-			t.Errorf("expected system prompt to mention _attachments directory, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "_attachments") {
+			t.Errorf("expected system prompt to mention _attachments directory, got: %q", systemText(body.System))
 		}
-		if !strings.Contains(body.System, ".meta.json") {
-			t.Errorf("expected system prompt to mention .meta.json sidecar convention, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), ".meta.json") {
+			t.Errorf("expected system prompt to mention .meta.json sidecar convention, got: %q", systemText(body.System))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -863,17 +879,17 @@ func TestClient_Stream_IncludesSaveAttachmentNotesTool(t *testing.T) {
 func TestClient_Stream_SystemPromptRequiresSaveAttachmentNotesForPDFs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		lower := strings.ToLower(body.System)
+		lower := strings.ToLower(systemText(body.System))
 		if !strings.Contains(lower, "save_attachment_notes") {
-			t.Errorf("expected system prompt to mention save_attachment_notes for PDFs, got: %q", body.System)
+			t.Errorf("expected system prompt to mention save_attachment_notes for PDFs, got: %q", systemText(body.System))
 		}
 		if !strings.Contains(lower, "pdf") {
-			t.Errorf("expected system prompt to mention PDF context for save_attachment_notes, got: %q", body.System)
+			t.Errorf("expected system prompt to mention PDF context for save_attachment_notes, got: %q", systemText(body.System))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -923,16 +939,87 @@ func TestClient_Stream_IncludesWebFetchTool(t *testing.T) {
 	body.Close()
 }
 
-func TestClient_Stream_SystemPromptMentionsWebFetch(t *testing.T) {
+func TestClient_Stream_SendsSystemPromptAsArrayWithCacheControl(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []struct {
+				Type         string `json:"type"`
+				Text         string `json:"text"`
+				CacheControl *struct {
+					Type string `json:"type"`
+				} `json:"cache_control"`
+			} `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		if !strings.Contains(body.System, "web_fetch") {
-			t.Errorf("expected system prompt to mention web_fetch, got: %q", body.System)
+		if len(body.System) == 0 {
+			t.Error("expected system to be a non-empty array")
+		} else {
+			last := body.System[len(body.System)-1]
+			if last.CacheControl == nil || last.CacheControl.Type != "ephemeral" {
+				t.Errorf("expected last system block to have cache_control ephemeral, got %+v", last.CacheControl)
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
+func TestClient_Stream_LastToolHasCacheControl(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Tools []struct {
+				Name         string `json:"name"`
+				CacheControl *struct {
+					Type string `json:"type"`
+				} `json:"cache_control"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if len(body.Tools) == 0 {
+			t.Error("expected at least one tool")
+		} else {
+			last := body.Tools[len(body.Tools)-1]
+			if last.CacheControl == nil || last.CacheControl.Type != "ephemeral" {
+				t.Errorf("expected last tool to have cache_control ephemeral, got %+v", last.CacheControl)
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
+func TestClient_Stream_SystemPromptMentionsWebFetch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System []systemBlock `json:"system"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if !strings.Contains(systemText(body.System), "web_fetch") {
+			t.Errorf("expected system prompt to mention web_fetch, got: %q", systemText(body.System))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -951,13 +1038,13 @@ func TestClient_Stream_SystemPromptMentionsWebFetch(t *testing.T) {
 func TestClient_Stream_SystemPromptMentionsWebSearch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
-		if !strings.Contains(body.System, "web_search") {
-			t.Errorf("expected system prompt to mention web_search, got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "web_search") {
+			t.Errorf("expected system prompt to mention web_search, got: %q", systemText(body.System))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -1011,15 +1098,15 @@ func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
 	// Arrange — capture the system prompt the client sends.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			System string `json:"system"`
+			System []systemBlock `json:"system"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding request body: %v", err)
 		}
 		// The system prompt must tell the LLM how to embed attachments in
 		// vault pages so it doesn't refuse to reference uploaded files.
-		if !strings.Contains(body.System, "![[") {
-			t.Errorf("expected system prompt to mention Obsidian embed syntax ![[...]], got: %q", body.System)
+		if !strings.Contains(systemText(body.System), "![[") {
+			t.Errorf("expected system prompt to mention Obsidian embed syntax ![[...]], got: %q", systemText(body.System))
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
