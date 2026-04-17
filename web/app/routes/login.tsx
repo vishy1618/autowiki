@@ -24,7 +24,7 @@ export default function Login() {
 
   return (
     <main style={styles.container}>
-      <h1 style={styles.title}>autowiki</h1>
+      <h1 style={styles.title}>auto<span style={{ color: "#1d4ed8" }}>wiki</span></h1>
       <p style={styles.subtitle}>Your self-maintaining knowledge base</p>
 
       {error === "unauthorized" && (

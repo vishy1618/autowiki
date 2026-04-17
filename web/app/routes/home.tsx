@@ -378,7 +378,7 @@ export default function Home() {
 
       {/* Header */}
       <header style={styles.header}>
-        <span style={styles.logo}>autowiki</span>
+        <span style={styles.logo}>auto<span style={styles.logoWiki}>wiki</span></span>
         <button onClick={handleSignOut} style={styles.signOutBtn}>
           Sign out
         </button>
@@ -561,6 +561,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     fontSize: "1rem",
     color: "#111",
+  },
+  logoWiki: {
+    color: "#1d4ed8",
   },
   signOutBtn: {
     background: "none",
