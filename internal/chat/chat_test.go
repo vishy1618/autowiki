@@ -354,6 +354,42 @@ func TestHandler_PostChat_NoEmptyTextBlockWhenLLMCallsToolWithoutText(t *testing
 	}
 }
 
+func TestHandler_PostChat_VaultStatusMessageIsGeneric(t *testing.T) {
+	// The "Saving to vault…" status must be emitted at content_block_start (when
+	// the tool name is first known) so the user sees feedback while the LLM is
+	// still streaming its tool JSON. At that point only the tool name is known —
+	// not the page paths — so the message must be generic ("Saving to vault…"),
+	// not path-specific ("Saving notes/foo.md…").
+	h := newTestHandler(t, &stubStreamer{body: toolUseAnthropicSSE})
+
+	form := url.Values{"message": {"save this"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	events := parseSSE(t, w.Body.String())
+
+	var statusMsg string
+	for _, ev := range events {
+		if ev.event == "status" {
+			var payload struct{ Message string }
+			_ = json.Unmarshal([]byte(ev.data), &payload)
+			statusMsg = payload.Message
+			break
+		}
+	}
+	if statusMsg == "" {
+		t.Fatal("expected a status SSE event for save_to_vault, got none")
+	}
+	// Must be generic — page paths are only known after full JSON is received.
+	if strings.Contains(statusMsg, "notes/") || strings.Contains(statusMsg, ".md") {
+		t.Errorf("status message must be generic, not path-specific; got %q", statusMsg)
+	}
+}
+
 func TestHandler_PostChat_StoresAssistantContentBlocksAndToolResultAfterVaultWrite(t *testing.T) {
 	// When the LLM calls save_to_vault, the handler must:
 	// (a) store the assistant message with the full content-block array so the
@@ -885,20 +921,20 @@ func TestHandler_PostChat_EmitsStatusEventOnSaveToVault(t *testing.T) {
 	// Act
 	h.ServeHTTP(w, req)
 
-	// Assert — a status event mentioning the page path is emitted before the vault event.
+	// Assert — a generic "Saving to vault…" status event is emitted before the vault event.
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	events := parseSSE(t, w.Body.String())
 	hasStatus := false
 	for _, ev := range events {
-		if ev.event == "status" && strings.Contains(ev.data, "notes/test.md") {
+		if ev.event == "status" && strings.Contains(ev.data, "vault") {
 			hasStatus = true
 			break
 		}
 	}
 	if !hasStatus {
-		t.Errorf("expected status SSE event mentioning vault path, got events: %v", events)
+		t.Errorf("expected status SSE event for vault write, got events: %v", events)
 	}
 }
 

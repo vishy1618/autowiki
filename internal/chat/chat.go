@@ -206,17 +206,6 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 			switch tc.name {
 			case "save_to_vault":
 				hasSaveToVault = true
-				var saveInput vaultWriteInput
-				if err := json.Unmarshal([]byte(tc.json), &saveInput); err == nil && len(saveInput.Pages) > 0 {
-					paths := make([]string, len(saveInput.Pages))
-					for i, p := range saveInput.Pages {
-						paths[i] = p.Path
-					}
-					writeSSE(w, "status", fmt.Sprintf(`{"message":"Saving %s\u2026"}`, strings.Join(paths, ", ")))
-					if canFlush {
-						flusher.Flush()
-					}
-				}
 				h.applyVaultWrites(w, session.ID, tc.id, tc.json, canFlush, flusher)
 
 			case "read_page":
@@ -447,6 +436,12 @@ func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher
 					currentID = payload.ContentBlock.ID
 					currentName = payload.ContentBlock.Name
 					toolJSONBuf.Reset()
+					if currentName == "save_to_vault" {
+						writeSSE(w, "status", `{"message":"Saving to vault\u2026"}`)
+						if canFlush {
+							flusher.Flush()
+						}
+					}
 				case "server_tool_use":
 					inServerToolUseBlock = true
 					serverToolName = payload.ContentBlock.Name
