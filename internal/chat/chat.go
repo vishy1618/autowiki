@@ -407,6 +407,11 @@ func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher
 	var serverToolName string
 	inServerToolUseBlock := false
 
+	writeSSE(w, "status", `{"message":"Working\u2026"}`)
+	if canFlush {
+		flusher.Flush()
+	}
+
 	scanner := bufio.NewScanner(body)
 	var lastEvent string
 	for scanner.Scan() {

@@ -1429,6 +1429,52 @@ func TestHandler_PostChat_ServerToolUseBlockDoesNotDispatchAsCustomTool(t *testi
 	}
 }
 
+func TestHandler_PostChat_EmitsWorkingStatusAsFirstEvent(t *testing.T) {
+	// The first SSE event on any stream must always be status:"Working…" so the
+	// user sees immediate feedback before Claude emits any content — this matters
+	// most when the LLM silently processes a large PDF before deciding to act.
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"text-only response", minimalAnthropicSSE},
+		{"vault-only response (no text preamble)", toolUseNoTextAnthropicSSE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange
+			h := newTestHandler(t, &stubStreamer{body: tc.body})
+			form := url.Values{"message": {"hello"}}
+			req := httptest.NewRequest(http.MethodPost, "/api/chat",
+				strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+
+			// Act
+			h.ServeHTTP(w, req)
+
+			// Assert
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			events := parseSSE(t, w.Body.String())
+			if len(events) == 0 {
+				t.Fatal("expected at least one SSE event, got none")
+			}
+			first := events[0]
+			if first.event != "status" {
+				t.Errorf("expected first event to be 'status', got %q", first.event)
+			}
+			var payload struct{ Message string }
+			if err := json.Unmarshal([]byte(first.data), &payload); err != nil {
+				t.Fatalf("parsing first status event data: %v", err)
+			}
+			if payload.Message != "Working\u2026" {
+				t.Errorf("expected first status message to be %q, got %q", "Working\u2026", payload.Message)
+			}
+		})
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 type sseEvent struct {

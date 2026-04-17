@@ -531,6 +531,29 @@ describe("Home — chat UI", () => {
     );
   });
 
+  it("keeps assistant bubble and shows vault summary when LLM saves without producing text", async () => {
+    // When the LLM calls save_to_vault without emitting any text, the stream
+    // delivers only a vault event (no delta). The finally cleanup must NOT pop
+    // the bubble — the vault summary is still meaningful to the user.
+    mockFetch({
+      "/api/chat": [chatSSE(
+        "event: vault\ndata: {\"changes\":[{\"path\":\"notes/silent.md\"}]}\n\n",
+        SSE_DONE
+      )],
+    });
+    const user = userEvent.setup();
+    renderHome();
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+    await user.type(screen.getByPlaceholderText(/message autowiki/i), "save this PDF");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/saved to vault/i)).toBeInTheDocument()
+    );
+    expect(screen.getByText(/notes\/silent\.md/)).toBeInTheDocument();
+  });
+
   it("does not show vault summary when no vault event", async () => {
     mockFetch({
       "/api/chat": [chatSSE(
