@@ -381,6 +381,69 @@ func TestHandler_GetSession_OmitsToolOnlyAssistantMessages(t *testing.T) {
 	}
 }
 
+// TestHandler_GetSession_VaultOnlyTurnWithStringEncodedPages covers the case
+// where the LLM double-encodes the pages array as a JSON string instead of an
+// inline array. The handler must not return the raw JSON blob to the frontend.
+func TestHandler_GetSession_VaultOnlyTurnWithStringEncodedPages(t *testing.T) {
+	cs := store.NewMemChatStore()
+	session, err := cs.ResolveSession()
+	if err != nil {
+		t.Fatalf("ResolveSession: %v", err)
+	}
+	// pages is a JSON-encoded string, not an inline array — matches real LLM output.
+	pagesJSON := `[{"path":"notes/go.md","content":"Go notes"}]`
+	toolOnlyStringPages := `[{"id":"tu_1","input":{"pages":"` + strings.ReplaceAll(pagesJSON, `"`, `\"`) + `"},"name":"save_to_vault","type":"tool_use"}]`
+	for _, m := range []store.Message{
+		{SessionID: session.ID, Role: "user", Content: "save this", CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "assistant", Content: toolOnlyStringPages, CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "tool_result", Content: `{"tool_use_id":"tu_1","content":"ok"}`, CreatedAt: time.Now()},
+		{SessionID: session.ID, Role: "assistant", Content: "Done.", CreatedAt: time.Now()},
+	} {
+		if err := cs.AppendMessage(m); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+	}
+
+	h := newHandler(t, cs)
+	req := httptest.NewRequest(http.MethodGet, "/api/chat-sessions/"+session.ID, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Messages []struct {
+			Role         string   `json:"role"`
+			Content      string   `json:"content"`
+			VaultChanges []string `json:"vault_changes"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	// Expect user + vault-only assistant (with vault_changes) + final assistant.
+	// The tool-only turn must not leak raw JSON as content.
+	if len(resp.Messages) != 3 {
+		t.Errorf("expected 3 messages, got %d: %+v", len(resp.Messages), resp.Messages)
+	}
+	for _, m := range resp.Messages {
+		if strings.HasPrefix(m.Content, "[{") {
+			t.Errorf("raw JSON content leaked to response: %q", m.Content)
+		}
+	}
+	// The vault-only turn should have the extracted vault path.
+	if len(resp.Messages) == 3 {
+		vaultTurn := resp.Messages[1]
+		if vaultTurn.Content != "" {
+			t.Errorf("vault-only turn should have empty content, got %q", vaultTurn.Content)
+		}
+		if len(vaultTurn.VaultChanges) != 1 || vaultTurn.VaultChanges[0] != "notes/go.md" {
+			t.Errorf("expected vault_changes [notes/go.md], got %v", vaultTurn.VaultChanges)
+		}
+	}
+}
+
 func TestHandler_GetSession_AssistantPlainTextContentUnchanged(t *testing.T) {
 	cs := store.NewMemChatStore()
 	session := seedSession(t, cs, "hello")

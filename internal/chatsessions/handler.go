@@ -115,18 +115,16 @@ func parseAssistantContent(content string) (string, []string) {
 	if len(content) == 0 || content[0] != '[' {
 		return content, nil
 	}
+	// Use json.RawMessage for Input to avoid UnmarshalTypeError when the LLM
+	// double-encodes the pages array as a JSON string instead of an inline array.
 	var blocks []struct {
-		Type  string `json:"type"`
-		Text  string `json:"text"`
-		Name  string `json:"name"`
-		Input struct {
-			Pages []struct {
-				Path string `json:"path"`
-			} `json:"pages"`
-		} `json:"input"`
+		Type  string          `json:"type"`
+		Text  string          `json:"text"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal([]byte(content), &blocks); err != nil {
-		return content, nil
+		return "", nil
 	}
 	var sb strings.Builder
 	var vaultPaths []string
@@ -136,13 +134,46 @@ func parseAssistantContent(content string) (string, []string) {
 			sb.WriteString(b.Text)
 		case "tool_use":
 			if b.Name == "save_to_vault" {
-				for _, p := range b.Input.Pages {
-					vaultPaths = append(vaultPaths, p.Path)
-				}
+				vaultPaths = append(vaultPaths, extractSaveToVaultPaths(b.Input)...)
 			}
 		}
 	}
 	return sb.String(), vaultPaths
+}
+
+// extractSaveToVaultPaths extracts page paths from a save_to_vault input block.
+// The LLM sometimes double-encodes the pages array as a JSON string; both forms
+// are handled.
+func extractSaveToVaultPaths(input json.RawMessage) []string {
+	type page struct {
+		Path string `json:"path"`
+	}
+	// Try inline array: {"pages": [{...}]}
+	var inline struct {
+		Pages []page `json:"pages"`
+	}
+	if err := json.Unmarshal(input, &inline); err == nil && len(inline.Pages) > 0 {
+		paths := make([]string, 0, len(inline.Pages))
+		for _, p := range inline.Pages {
+			paths = append(paths, p.Path)
+		}
+		return paths
+	}
+	// Try string-encoded array: {"pages": "[{...}]"}
+	var encoded struct {
+		Pages string `json:"pages"`
+	}
+	if err := json.Unmarshal(input, &encoded); err == nil && encoded.Pages != "" {
+		var pages []page
+		if err := json.Unmarshal([]byte(encoded.Pages), &pages); err == nil {
+			paths := make([]string, 0, len(pages))
+			for _, p := range pages {
+				paths = append(paths, p.Path)
+			}
+			return paths
+		}
+	}
+	return nil
 }
 
 func queryInt(r *http.Request, key string, def int) int {
