@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	sessionCookieName = "autowiki_session"
-	sessionDuration   = 30 * time.Minute
-	stateCookieName   = "oauth_state"
+	sessionCookieName   = "autowiki_session"
+	sessionDuration     = 30 * time.Minute
+	absoluteMaxLifetime = 30 * 24 * time.Hour
+	stateCookieName     = "oauth_state"
 )
 
 // Config holds the auth-specific configuration.
@@ -161,11 +162,13 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now().UTC()
 	sess := store.Session{
-		Token:     sessionToken,
-		Email:     email,
-		CreatedAt: time.Now().UTC(),
-		ExpiresAt: time.Now().UTC().Add(sessionDuration),
+		Token:             sessionToken,
+		Email:             email,
+		CreatedAt:         now,
+		ExpiresAt:         now.Add(sessionDuration),
+		AbsoluteExpiresAt: now.Add(absoluteMaxLifetime),
 	}
 	if err := h.sessions.CreateSession(sess); err != nil {
 		http.Error(w, "failed to store session", http.StatusInternalServerError)

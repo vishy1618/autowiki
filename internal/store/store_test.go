@@ -117,4 +117,130 @@ func runSessionStoreTests(t *testing.T, s store.SessionStore) {
 			t.Errorf("DeleteSession on missing token: want nil error, got %v", err)
 		}
 	})
+
+	t.Run("Get_AbsoluteExpiry_RejectsWhenPast", func(t *testing.T) {
+		// Arrange — rolling expiry is fine but absolute lifetime has passed
+		sess := store.Session{
+			Token:             "tok-abs-expired",
+			Email:             "user@example.com",
+			CreatedAt:         time.Now().UTC().Add(-31 * 24 * time.Hour),
+			ExpiresAt:         time.Now().UTC().Add(30 * time.Minute),
+			AbsoluteExpiresAt: time.Now().UTC().Add(-1 * time.Hour),
+		}
+		if err := s.CreateSession(sess); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+
+		// Act
+		got, err := s.GetSession(sess.Token)
+
+		// Assert
+		if err != nil {
+			t.Fatalf("GetSession: want nil error, got %v", err)
+		}
+		if got != nil {
+			t.Errorf("GetSession: want nil for absolute-expired session, got %+v", got)
+		}
+	})
+
+	t.Run("RotateSession_NewTokenIsValid", func(t *testing.T) {
+		// Arrange
+		old := store.Session{
+			Token:             "tok-rotate-old",
+			Email:             "user@example.com",
+			CreatedAt:         time.Now().UTC(),
+			ExpiresAt:         time.Now().UTC().Add(5 * time.Minute),
+			AbsoluteExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
+		}
+		if err := s.CreateSession(old); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+		newSess := store.Session{
+			Token:             "tok-rotate-new",
+			Email:             "user@example.com",
+			CreatedAt:         time.Now().UTC(),
+			ExpiresAt:         time.Now().UTC().Add(30 * time.Minute),
+			AbsoluteExpiresAt: old.AbsoluteExpiresAt,
+		}
+
+		// Act
+		if err := s.RotateSession(old.Token, newSess, 30*time.Second); err != nil {
+			t.Fatalf("RotateSession: %v", err)
+		}
+
+		// Assert — new token is retrievable
+		got, err := s.GetSession(newSess.Token)
+		if err != nil {
+			t.Fatalf("GetSession new token: %v", err)
+		}
+		if got == nil {
+			t.Fatal("GetSession new token: want session, got nil")
+		}
+		if got.Email != newSess.Email {
+			t.Errorf("Email: want %q, got %q", newSess.Email, got.Email)
+		}
+	})
+
+	t.Run("RotateSession_OldTokenRemainsValidDuringGrace", func(t *testing.T) {
+		// Arrange
+		old := store.Session{
+			Token:             "tok-grace-old",
+			Email:             "user@example.com",
+			CreatedAt:         time.Now().UTC(),
+			ExpiresAt:         time.Now().UTC().Add(5 * time.Minute),
+			AbsoluteExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
+		}
+		if err := s.CreateSession(old); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+		newSess := store.Session{
+			Token:             "tok-grace-new",
+			Email:             "user@example.com",
+			CreatedAt:         time.Now().UTC(),
+			ExpiresAt:         time.Now().UTC().Add(30 * time.Minute),
+			AbsoluteExpiresAt: old.AbsoluteExpiresAt,
+		}
+
+		// Act
+		if err := s.RotateSession(old.Token, newSess, 30*time.Second); err != nil {
+			t.Fatalf("RotateSession: %v", err)
+		}
+
+		// Assert — old token still resolves (grace window)
+		got, err := s.GetSession(old.Token)
+		if err != nil {
+			t.Fatalf("GetSession old token: %v", err)
+		}
+		if got == nil {
+			t.Fatal("GetSession old token: want session during grace, got nil")
+		}
+		if !got.GraceOnly {
+			t.Error("GetSession old token: want GraceOnly=true")
+		}
+	})
+
+	t.Run("Get_AbsoluteExpiry_AllowsWhenNotSet", func(t *testing.T) {
+		// Arrange — zero AbsoluteExpiresAt means no absolute limit (backwards compat)
+		sess := store.Session{
+			Token:     "tok-no-abs",
+			Email:     "user@example.com",
+			CreatedAt: time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().Add(30 * time.Minute),
+			// AbsoluteExpiresAt zero — no absolute limit
+		}
+		if err := s.CreateSession(sess); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+
+		// Act
+		got, err := s.GetSession(sess.Token)
+
+		// Assert
+		if err != nil {
+			t.Fatalf("GetSession: %v", err)
+		}
+		if got == nil {
+			t.Error("GetSession: want session, got nil")
+		}
+	})
 }

@@ -57,7 +57,11 @@ func (p *PebbleStore) GetSession(token string) (*Session, error) {
 		return nil, fmt.Errorf("unmarshalling session: %w", err)
 	}
 
-	if time.Now().After(s.ExpiresAt) {
+	now := time.Now()
+	if now.After(s.ExpiresAt) {
+		return nil, nil
+	}
+	if !s.AbsoluteExpiresAt.IsZero() && now.After(s.AbsoluteExpiresAt) {
 		return nil, nil
 	}
 
@@ -67,4 +71,31 @@ func (p *PebbleStore) GetSession(token string) (*Session, error) {
 func (p *PebbleStore) DeleteSession(token string) error {
 	key := []byte(sessionKeyPrefix + token)
 	return p.db.Delete(key, pebble.Sync)
+}
+
+func (p *PebbleStore) RotateSession(oldToken string, newSess Session, gracePeriod time.Duration) error {
+	// Write new session.
+	if err := p.CreateSession(newSess); err != nil {
+		return fmt.Errorf("creating new session: %w", err)
+	}
+
+	// Overwrite old token with a grace tombstone.
+	key := []byte(sessionKeyPrefix + oldToken)
+	data, closer, err := p.db.Get(key)
+	if err == pebble.ErrNotFound {
+		return nil // old token already gone — nothing to tombstone
+	}
+	if err != nil {
+		return fmt.Errorf("fetching old session: %w", err)
+	}
+	var old Session
+	unmarshalErr := json.Unmarshal(data, &old)
+	closer.Close()
+	if unmarshalErr != nil {
+		return fmt.Errorf("unmarshalling old session: %w", unmarshalErr)
+	}
+
+	old.ExpiresAt = time.Now().Add(gracePeriod)
+	old.GraceOnly = true
+	return p.CreateSession(old) // overwrites the key (same token)
 }

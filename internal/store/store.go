@@ -41,10 +41,15 @@ type ChatStore interface {
 
 // Session holds an authenticated user session.
 type Session struct {
-	Token     string    `json:"token"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Token             string    `json:"token"`
+	Email             string    `json:"email"`
+	CreatedAt         time.Time `json:"created_at"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	AbsoluteExpiresAt time.Time `json:"absolute_expires_at,omitempty"`
+	// GraceOnly marks a short-lived tombstone left after token rotation so
+	// in-flight requests carrying the superseded token still succeed for
+	// ~30 seconds. Grace sessions are not eligible for further rotation.
+	GraceOnly bool `json:"grace_only,omitempty"`
 }
 
 // SessionStore persists and retrieves auth sessions.
@@ -54,9 +59,15 @@ type SessionStore interface {
 	CreateSession(s Session) error
 
 	// GetSession retrieves a session by token. Returns nil, nil when the
-	// token does not exist or has expired.
+	// token does not exist or has expired (rolling or absolute).
 	GetSession(token string) (*Session, error)
 
 	// DeleteSession removes a session by token. A no-op if not found.
 	DeleteSession(token string) error
+
+	// RotateSession atomically creates newSess and replaces the record for
+	// oldToken with a short-lived grace tombstone (GraceOnly=true, ExpiresAt
+	// = now+gracePeriod). In-flight requests carrying the old token remain
+	// valid during the grace window but will not trigger further rotation.
+	RotateSession(oldToken string, newSess Session, gracePeriod time.Duration) error
 }
