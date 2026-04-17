@@ -26,6 +26,17 @@ body {
   }
 }
 
+/* Chat input box */
+.input-box {
+  border: 1px solid #e0e0e0;
+  border-radius: 14px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.input-box:focus-within {
+  border-color: #bbb;
+  box-shadow: 0 0 0 3px rgba(0,0,0,0.05);
+}
+
 /* Markdown content rendered inside chat bubbles. */
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }

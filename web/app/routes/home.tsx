@@ -431,31 +431,42 @@ export default function Home() {
             ))}
           </div>
         )}
-        <div style={styles.inputRow}>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            style={styles.attachBtn}
-            title="Attach file"
-            aria-label="Attach file"
-          >
-            📎
-          </button>
+        <div className="input-box" style={styles.inputBox}>
           <textarea
             ref={inputRef}
             style={styles.textarea}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message autowiki… (Enter to send, Shift+Enter for newline)"
-            rows={3}
+            placeholder="Message autowiki…"
+            rows={2}
           />
-          <button
-            onClick={sendMessage}
-            disabled={sending || !input.trim() || pendingAttachments.some((a) => a.uploading)}
-            style={styles.sendBtn}
-          >
-            {sending ? "…" : "Send"}
-          </button>
+          <div style={styles.inputBoxFooter}>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={styles.attachBtn}
+              title="Attach file"
+              aria-label="Attach file"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+              </svg>
+            </button>
+            <button
+              onClick={sendMessage}
+              disabled={sending || !input.trim() || pendingAttachments.some((a) => a.uploading)}
+              style={{
+                ...styles.sendIconBtn,
+                opacity: input.trim() && !sending ? 1 : 0,
+                pointerEvents: input.trim() && !sending ? "auto" : "none",
+              }}
+              aria-label="Send message"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 4l8 16H4z"/>
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -668,38 +679,55 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column" as const,
     gap: "0.5rem",
-    padding: "1rem 1.5rem",
+    padding: "0.75rem 1.5rem 1.25rem",
     borderTop: "1px solid #e5e5e5",
     background: "#fff",
   },
-  inputRow: {
+  inputBox: {
     display: "flex",
-    gap: "0.75rem",
-    alignItems: "flex-end",
+    flexDirection: "column" as const,
+    borderRadius: "14px",
+    background: "#fff",
   },
   textarea: {
-    flex: 1,
     resize: "none",
-    border: "1px solid #ddd",
-    borderRadius: "8px",
-    padding: "0.6rem 0.85rem",
+    border: "none",
+    outline: "none",
+    padding: "0.75rem 1rem 0.25rem",
     fontSize: "0.95rem",
     fontFamily: "inherit",
     lineHeight: 1.5,
-    outline: "none",
     color: "#111",
-    background: "#fff",
+    background: "transparent",
   },
-  sendBtn: {
-    padding: "0.6rem 1.2rem",
+  inputBoxFooter: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "0.25rem 0.5rem 0.5rem",
+  },
+  attachBtn: {
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    padding: "0.35rem",
+    borderRadius: "6px",
+    color: "#888",
+    display: "flex",
+    alignItems: "center",
+  },
+  sendIconBtn: {
+    width: "30px",
+    height: "30px",
+    borderRadius: "8px",
     background: "#111",
     color: "#fff",
     border: "none",
-    borderRadius: "8px",
     cursor: "pointer",
-    fontSize: "0.95rem",
-    fontWeight: 500,
-    height: "fit-content",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    transition: "opacity 0.15s",
   },
   dropOverlay: {
     position: "fixed" as const,
@@ -801,16 +829,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#888",
     padding: 0,
     lineHeight: 1,
-  },
-  attachBtn: {
-    background: "none",
-    border: "none",
-    cursor: "pointer",
-    fontSize: "1.1rem",
-    padding: "0.4rem",
-    borderRadius: "6px",
-    height: "fit-content",
-    alignSelf: "flex-end",
   },
   timestamp: {
     display: "block",
