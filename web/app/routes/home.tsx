@@ -269,6 +269,7 @@ export default function Home() {
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let lastEventWasStatus = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -295,20 +296,27 @@ export default function Home() {
                     }
                     return next;
                   });
+                  lastEventWasStatus = true;
                 } catch {
                   // ignore malformed status
                 }
               } else if (currentEvent === "delta") {
               try {
                 const { text } = JSON.parse(data) as { text: string };
+                const prependNewline = lastEventWasStatus;
+                lastEventWasStatus = false;
                 setMessages((prev) => {
                   const next = [...prev];
                   const last = next[next.length - 1];
                   if (last && isMessage(last) && last.role === "assistant") {
+                    const prefix =
+                      prependNewline && last.content && !/\s$/.test(last.content)
+                        ? "\n\n"
+                        : "";
                     next[next.length - 1] = {
                       ...last,
                       statusMessage: undefined,
-                      content: last.content + text,
+                      content: last.content + prefix + text,
                     };
                   }
                   return next;

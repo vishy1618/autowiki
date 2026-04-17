@@ -685,6 +685,39 @@ describe("Home — chat UI", () => {
     await waitFor(() => expect(screen.getByText("oldest")).toBeInTheDocument());
   });
 
+  it("inserts a newline before first delta after a status event", async () => {
+    mockFetch({
+      "/api/chat": [chatSSE(
+        "event: delta\ndata: {\"text\":\"Let me search for it.\"}\n\n",
+        "event: status\ndata: {\"message\":\"Searching vault\u2026\"}\n\n",
+        "event: delta\ndata: {\"text\":\"I found it.\"}\n\n",
+        SSE_DONE
+      )],
+    });
+    const user = userEvent.setup();
+    renderHome();
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+    await user.type(screen.getByPlaceholderText(/message autowiki/i), "find it");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/I found it/)).toBeInTheDocument()
+    );
+    // The content should have a newline separating pre-tool and post-tool text.
+    // react-markdown renders "\n\n" as a paragraph break, so the two sentences
+    // must appear in distinct <p> elements — no single paragraph contains both.
+    const paragraphs = Array.from(document.querySelectorAll(".md p")).map(
+      (p) => p.textContent ?? ""
+    );
+    const hasBoth = paragraphs.some(
+      (t) => /Let me search for it/.test(t) && /I found it/.test(t)
+    );
+    expect(hasBoth).toBe(false);
+    expect(paragraphs.some((t) => /Let me search for it/.test(t))).toBe(true);
+    expect(paragraphs.some((t) => /I found it/.test(t))).toBe(true);
+  });
+
   it("stops fetching when fewer sessions than limit are returned", async () => {
     const triggerSentinel = mockIntersectionObserver();
     const fetchSpy = mockFetch({
