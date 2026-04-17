@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -38,6 +38,10 @@ interface SessionDivider {
 }
 
 type ChatItem = Message | SessionDivider;
+
+function isMessage(item: ChatItem): item is Message {
+  return "role" in item;
+}
 
 export default function Home() {
   const navigate = useNavigate();
@@ -274,7 +278,7 @@ export default function Home() {
                   setMessages((prev) => {
                     const next = [...prev];
                     const last = next[next.length - 1];
-                    if (last?.role === "assistant") {
+                    if (last && isMessage(last) && last.role === "assistant") {
                       next[next.length - 1] = { ...last, statusMessage: message };
                     }
                     return next;
@@ -288,7 +292,7 @@ export default function Home() {
                 setMessages((prev) => {
                   const next = [...prev];
                   const last = next[next.length - 1];
-                  if (last?.role === "assistant") {
+                  if (last && isMessage(last) && last.role === "assistant") {
                     next[next.length - 1] = {
                       ...last,
                       statusMessage: undefined,
@@ -306,7 +310,7 @@ export default function Home() {
                 setMessages((prev) => {
                   const next = [...prev];
                   const last = next[next.length - 1];
-                  if (last?.role === "assistant") {
+                  if (last && isMessage(last) && last.role === "assistant") {
                     next[next.length - 1] = { ...last, vaultChanges: changes };
                   }
                   return next;
@@ -333,7 +337,7 @@ export default function Home() {
       setMessages((prev) => {
         const next = [...prev];
         const last = next[next.length - 1];
-        if (last?.role === "assistant" && last.streaming) {
+        if (last && isMessage(last) && last.role === "assistant" && last.streaming) {
           next[next.length - 1] = { ...last, streaming: false, createdAt: new Date().toISOString() };
         }
         return next;
@@ -385,89 +389,14 @@ export default function Home() {
       </header>
 
       {/* Message thread */}
-      <div style={styles.thread}>
-        {/* Sentinel observed for infinite scroll upward */}
-        {hasMoreHistory && <div ref={sentinelRef} />}
-        {historyLoading && (
-          <p style={styles.historyLoading}>Loading…</p>
-        )}
-        {messages.length === 0 && !historyLoading && (
-          <p style={styles.emptyHint}>Start a conversation…</p>
-        )}
-        {messages.map((item, i) => {
-          if ("kind" in item && item.kind === "divider") {
-            return <hr key={item.id} data-testid="session-divider" style={styles.sessionDivider} />;
-          }
-          const msg = item as Message;
-          return (
-          <div
-            key={i}
-            style={{
-              ...styles.bubble,
-              ...(msg.role === "user" ? styles.userBubble : styles.assistantBubble),
-            }}
-          >
-            <span style={styles.roleLabel}>
-              {msg.role === "user" ? "You" : "Assistant"}
-            </span>
-            {msg.createdAt && (
-              <span
-                style={styles.timestamp}
-                title={new Date(msg.createdAt).toLocaleString()}
-              >
-                {formatRelative(msg.createdAt)}
-              </span>
-            )}
-            {msg.role === "user" && msg.attachments && msg.attachments.length > 0 && (
-              <div style={styles.attachmentRow}>
-                {msg.attachments.map((att) =>
-                  att.previewUrl ? (
-                    <img
-                      key={att.localId}
-                      src={att.previewUrl}
-                      alt={att.file.name}
-                      style={styles.attachmentThumb}
-                    />
-                  ) : (
-                    <div key={att.localId} style={styles.attachmentFileCard}>
-                      <span style={styles.attachmentFileExt}>
-                        {att.file.name.split(".").pop()?.toUpperCase() ?? "FILE"}
-                      </span>
-                      <span style={styles.attachmentFileName}>{att.file.name}</span>
-                    </div>
-                  )
-                )}
-              </div>
-            )}
-            {msg.role === "assistant" ? (
-              <div style={styles.bubbleText}>
-                {msg.statusMessage && (
-                  <em style={styles.statusLine}>{msg.statusMessage}</em>
-                )}
-                <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.content}</Markdown>
-                {msg.streaming && <span style={styles.cursor}>▌</span>}
-                {!msg.streaming && msg.vaultChanges && msg.vaultChanges.length > 0 && (
-                  <details style={styles.vaultSummary}>
-                    <summary style={styles.vaultSummaryTitle}>Saved to vault</summary>
-                    <ul style={styles.vaultList}>
-                      {msg.vaultChanges.map((c) => (
-                        <li key={c.path} style={styles.vaultListItem}>{c.path}</li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </div>
-            ) : (
-              <p style={styles.bubbleText}>
-                {msg.content}
-              </p>
-            )}
-          </div>
-          );
-        })}
-        {error && <p style={styles.errorText}>Error: {error}</p>}
-        <div ref={bottomRef} />
-      </div>
+      <MessageThread
+        messages={messages}
+        error={error}
+        historyLoading={historyLoading}
+        hasMoreHistory={hasMoreHistory}
+        bottomRef={bottomRef}
+        sentinelRef={sentinelRef}
+      />
 
       {/* Input bar */}
       <div style={styles.inputBar}>
@@ -528,6 +457,105 @@ export default function Home() {
     </div>
   );
 }
+
+interface MessageThreadProps {
+  messages: ChatItem[];
+  error: string | null;
+  historyLoading: boolean;
+  hasMoreHistory: boolean;
+  bottomRef: React.RefObject<HTMLDivElement | null>;
+  sentinelRef: React.RefObject<HTMLDivElement | null>;
+}
+
+const MessageThread = memo(function MessageThread({
+  messages,
+  error,
+  historyLoading,
+  hasMoreHistory,
+  bottomRef,
+  sentinelRef,
+}: MessageThreadProps) {
+  return (
+    <div style={styles.thread}>
+      {hasMoreHistory && <div ref={sentinelRef} />}
+      {historyLoading && <p style={styles.historyLoading}>Loading…</p>}
+      {messages.length === 0 && !historyLoading && (
+        <p style={styles.emptyHint}>Start a conversation…</p>
+      )}
+      {messages.map((item, i) => {
+        if ("kind" in item && item.kind === "divider") {
+          return <hr key={item.id} data-testid="session-divider" style={styles.sessionDivider} />;
+        }
+        const msg = item as Message;
+        return (
+          <div
+            key={i}
+            style={{
+              ...styles.bubble,
+              ...(msg.role === "user" ? styles.userBubble : styles.assistantBubble),
+            }}
+          >
+            <span style={styles.roleLabel}>
+              {msg.role === "user" ? "You" : "Assistant"}
+            </span>
+            {msg.createdAt && (
+              <span
+                style={styles.timestamp}
+                title={new Date(msg.createdAt).toLocaleString()}
+              >
+                {formatRelative(msg.createdAt)}
+              </span>
+            )}
+            {msg.role === "user" && msg.attachments && msg.attachments.length > 0 && (
+              <div style={styles.attachmentRow}>
+                {msg.attachments.map((att) =>
+                  att.previewUrl ? (
+                    <img
+                      key={att.localId}
+                      src={att.previewUrl}
+                      alt={att.file.name}
+                      style={styles.attachmentThumb}
+                    />
+                  ) : (
+                    <div key={att.localId} style={styles.attachmentFileCard}>
+                      <span style={styles.attachmentFileExt}>
+                        {att.file.name.split(".").pop()?.toUpperCase() ?? "FILE"}
+                      </span>
+                      <span style={styles.attachmentFileName}>{att.file.name}</span>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+            {msg.role === "assistant" ? (
+              <div style={styles.bubbleText}>
+                {msg.statusMessage && (
+                  <em style={styles.statusLine}>{msg.statusMessage}</em>
+                )}
+                <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{msg.content}</Markdown>
+                {msg.streaming && <span style={styles.cursor}>▌</span>}
+                {!msg.streaming && msg.vaultChanges && msg.vaultChanges.length > 0 && (
+                  <details style={styles.vaultSummary}>
+                    <summary style={styles.vaultSummaryTitle}>Saved to vault</summary>
+                    <ul style={styles.vaultList}>
+                      {msg.vaultChanges.map((c) => (
+                        <li key={c.path} style={styles.vaultListItem}>{c.path}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            ) : (
+              <p style={styles.bubbleText}>{msg.content}</p>
+            )}
+          </div>
+        );
+      })}
+      {error && <p style={styles.errorText}>Error: {error}</p>}
+      <div ref={bottomRef} />
+    </div>
+  );
+});
 
 const markdownComponents = {
   table: (props: React.HTMLAttributes<HTMLTableElement>) => (
