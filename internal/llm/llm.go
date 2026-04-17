@@ -501,6 +501,25 @@ func buildRequestMessages(messages []store.Message) []requestMessage {
 	return out
 }
 
+// addCacheControl injects cache_control into the last content block of a
+// message. Anthropic requires it at the block level, not the message level.
+// Plain-string content is converted to a single text block first.
+func addCacheControl(msg *requestMessage) {
+	cc := map[string]any{"type": "ephemeral"}
+	switch c := msg.Content.(type) {
+	case string:
+		msg.Content = []any{
+			map[string]any{"type": "text", "text": c, "cache_control": cc},
+		}
+	case []any:
+		if len(c) > 0 {
+			if last, ok := c[len(c)-1].(map[string]any); ok {
+				last["cache_control"] = cc
+			}
+		}
+	}
+}
+
 // Stream opens a streaming request to the Anthropic Messages API and returns
 // the raw SSE response body. The caller must close the returned ReadCloser.
 // indexMD is the current content of index.md in the vault; pass an empty
@@ -548,6 +567,13 @@ func (c *Client) Stream(ctx context.Context, messages []store.Message, indexMD s
 			msg.Content = blocks
 			break
 		}
+	}
+
+	// Cache the stable history prefix — everything before the current user turn.
+	// This benefits both multi-turn conversations (5-min TTL) and the agentic
+	// loop within a single request (same history re-sent on each iteration).
+	if len(reqMsgs) >= 2 {
+		addCacheControl(&reqMsgs[len(reqMsgs)-2])
 	}
 
 	system := systemPromptBase

@@ -407,6 +407,98 @@ func TestClient_Stream_SendsAssistantContentBlocksWhenContentIsJSONArray(t *test
 	}
 }
 
+func TestClient_Stream_SetsCacheControlOnSecondToLastMessage(t *testing.T) {
+	// When there are 2+ messages, the second-to-last API message (the last from
+	// the previous turn) must have cache_control so the stable history prefix is
+	// cached across turns and agentic loop iterations.
+	var capturedMessages []json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		capturedMessages = body.Messages
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	messages := []store.Message{
+		{Role: "assistant", Content: "Hello! How can I help?"},
+		{Role: "user", Content: "Tell me about Go"},
+	}
+
+	body, err := client.Stream(t.Context(), messages, "", "", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+
+	if len(capturedMessages) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(capturedMessages))
+	}
+
+	// cache_control must be on the last content block of the second-to-last
+	// message, not on the message itself (Anthropic rejects top-level cache_control).
+	idx := len(capturedMessages) - 2
+	var secondToLast struct {
+		Content []struct {
+			CacheControl *struct {
+				Type string `json:"type"`
+			} `json:"cache_control"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(capturedMessages[idx], &secondToLast); err != nil {
+		t.Fatalf("unmarshalling second-to-last message: %v", err)
+	}
+	if len(secondToLast.Content) == 0 {
+		t.Fatalf("expected content blocks in second-to-last message, got: %s", capturedMessages[idx])
+	}
+	lastBlock := secondToLast.Content[len(secondToLast.Content)-1]
+	if lastBlock.CacheControl == nil || lastBlock.CacheControl.Type != "ephemeral" {
+		t.Errorf("expected last content block to have cache_control ephemeral, got: %s", capturedMessages[idx])
+	}
+}
+
+func TestClient_Stream_NoCacheControlWithSingleMessage(t *testing.T) {
+	// With only one message (first turn), there is no prior history to cache.
+	var capturedMessages []json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		capturedMessages = body.Messages
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	messages := []store.Message{
+		{Role: "user", Content: "Hello"},
+	}
+
+	body, err := client.Stream(t.Context(), messages, "", "", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+
+	for i, raw := range capturedMessages {
+		var msg struct {
+			CacheControl *struct{} `json:"cache_control"`
+		}
+		_ = json.Unmarshal(raw, &msg)
+		if msg.CacheControl != nil {
+			t.Errorf("message %d should not have cache_control on first turn, got: %s", i, raw)
+		}
+	}
+}
+
 func TestClient_Stream_SendsPdfAttachmentAsDocumentContentBlock(t *testing.T) {
 	// Arrange — capture the messages the client sends and verify the last
 	// user message contains a document content block for the PDF.
