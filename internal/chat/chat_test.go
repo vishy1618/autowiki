@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suvish/autowiki/internal/chat"
 	"github.com/suvish/autowiki/internal/llm"
@@ -1006,6 +1007,92 @@ event: message_stop
 data: {"type":"message_stop"}
 
 `
+
+// searchChatHistoryToolUseSSE is a streaming response where the model calls search_chat_history.
+const searchChatHistoryToolUseSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_sch1","name":"search_chat_history","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"Go interfaces\",\"offset\":0}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func TestHandler_PostChat_DispatchesSearchChatHistory_EmitsStatusAndToolResult(t *testing.T) {
+	// Arrange — seed two sessions with content matching the query.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+
+	cs := store.NewMemChatStore()
+	sess, _ := cs.ResolveSession()
+	_ = cs.AppendMessage(store.Message{SessionID: sess.ID, Role: "user", Content: "Go interfaces are structural types"})
+	// Age it out so the next ResolveSession creates a new one.
+	stale := sess
+	stale.LastActiveAt = time.Now().Add(-31 * time.Minute)
+	_ = cs.UpdateSession(stale)
+
+	// First call: search_chat_history. Second call: final text answer.
+	streamer := &multiResponseStreamer{bodies: []string{searchChatHistoryToolUseSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"didn't we talk about Go interfaces?"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — request succeeded.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	events := parseSSE(t, w.Body.String())
+
+	// Assert — status SSE event emitted before the search.
+	hasStatus := false
+	for _, ev := range events {
+		if ev.event == "status" && strings.Contains(strings.ToLower(ev.data), "searching") {
+			hasStatus = true
+			break
+		}
+	}
+	if !hasStatus {
+		t.Errorf("expected status event containing 'Searching', got events: %v", events)
+	}
+
+	// Assert — ends with done.
+	if len(events) == 0 || events[len(events)-1].event != "done" {
+		t.Errorf("expected last event to be done, got: %v", events)
+	}
+
+	// Assert — tool result persisted in the current (new) session.
+	sessions, err := cs.ListSessions(1, 0)
+	if err != nil || len(sessions) == 0 {
+		t.Fatalf("ListSessions: %v, %v", sessions, err)
+	}
+	msgs, err := cs.ListMessages(sessions[0].ID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	hasToolResult := false
+	for _, m := range msgs {
+		if m.Role == "tool_result" {
+			hasToolResult = true
+			break
+		}
+	}
+	if !hasToolResult {
+		t.Errorf("expected a tool_result message in session %q, got: %v", sessions[0].ID, msgs)
+	}
+}
 
 func TestHandler_PostChat_DispatchesMultipleToolCallsInOneResponse(t *testing.T) {
 	// Arrange — vault has two files; model deletes both in one response.

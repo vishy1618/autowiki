@@ -19,6 +19,13 @@ type Message struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// MessageSearchResult is a single hit from SearchMessages.
+type MessageSearchResult struct {
+	SessionDate string // RFC3339 date of the session's CreatedAt
+	Role        string // "user" or "assistant"
+	Snippet     string // up to 300 characters of the matching message content
+}
+
 // ChatStore persists chat sessions and messages.
 type ChatStore interface {
 	// ResolveSession returns the current active session, or creates a new one
@@ -37,6 +44,11 @@ type ChatStore interface {
 	// ListSessions returns sessions newest-first. limit caps the count;
 	// offset skips the first N sessions (for pagination).
 	ListSessions(limit, offset int) ([]ChatSession, error)
+
+	// SearchMessages scans up to sessionLimit sessions starting at sessionOffset
+	// (newest-first), does a case-insensitive substring match on message content,
+	// skips tool_result messages, and returns snippets (≤300 chars) with session date.
+	SearchMessages(query string, sessionOffset, sessionLimit int) ([]MessageSearchResult, error)
 }
 
 // Session holds an authenticated user session.

@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,14 +80,55 @@ func (m *MemChatStore) ListSessions(limit, offset int) ([]ChatSession, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Sessions are stored oldest→newest; reverse for newest-first.
+	out, err := m.listSessionsLocked(limit, offset)
+	if out == nil {
+		out = []ChatSession{}
+	}
+	return out, err
+}
+
+func (m *MemChatStore) SearchMessages(query string, sessionOffset, sessionLimit int) ([]MessageSearchResult, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	lower := strings.ToLower(query)
+	sessions, _ := m.listSessionsLocked(sessionLimit, sessionOffset)
+
+	var out []MessageSearchResult
+	for _, sess := range sessions {
+		for _, msg := range m.messages {
+			if msg.SessionID != sess.ID {
+				continue
+			}
+			if msg.Role == "tool_result" {
+				continue
+			}
+			if !strings.Contains(strings.ToLower(msg.Content), lower) {
+				continue
+			}
+			snippet := msg.Content
+			if len(snippet) > 300 {
+				snippet = snippet[:300]
+			}
+			out = append(out, MessageSearchResult{
+				SessionDate: sess.CreatedAt.Format(time.RFC3339),
+				Role:        msg.Role,
+				Snippet:     snippet,
+			})
+		}
+	}
+	if out == nil {
+		out = []MessageSearchResult{}
+	}
+	return out, nil
+}
+
+// listSessionsLocked is ListSessions without the lock (caller must hold m.mu).
+func (m *MemChatStore) listSessionsLocked(limit, offset int) ([]ChatSession, error) {
 	n := len(m.sessions)
 	var out []ChatSession
 	for i := n - 1 - offset; i >= 0 && len(out) < limit; i-- {
 		out = append(out, m.sessions[i])
-	}
-	if out == nil {
-		out = []ChatSession{}
 	}
 	return out, nil
 }

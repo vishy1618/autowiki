@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -181,6 +182,43 @@ func (p *PebbleChatStore) ListSessions(limit, offset int) ([]ChatSession, error)
 		if found {
 			out = append(out, s)
 		}
+	}
+	return out, nil
+}
+
+func (p *PebbleChatStore) SearchMessages(query string, sessionOffset, sessionLimit int) ([]MessageSearchResult, error) {
+	sessions, err := p.ListSessions(sessionLimit, sessionOffset)
+	if err != nil {
+		return nil, err
+	}
+
+	lower := strings.ToLower(query)
+	var out []MessageSearchResult
+	for _, sess := range sessions {
+		msgs, err := p.ListMessages(sess.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, msg := range msgs {
+			if msg.Role == "tool_result" {
+				continue
+			}
+			if !strings.Contains(strings.ToLower(msg.Content), lower) {
+				continue
+			}
+			snippet := msg.Content
+			if len(snippet) > 300 {
+				snippet = snippet[:300]
+			}
+			out = append(out, MessageSearchResult{
+				SessionDate: sess.CreatedAt.Format(time.RFC3339),
+				Role:        msg.Role,
+				Snippet:     snippet,
+			})
+		}
+	}
+	if out == nil {
+		out = []MessageSearchResult{}
 	}
 	return out, nil
 }

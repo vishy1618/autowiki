@@ -326,6 +326,20 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 
+			case "search_chat_history":
+				var input struct {
+					Query  string `json:"query"`
+					Offset int    `json:"offset"`
+				}
+				_ = json.Unmarshal([]byte(tc.json), &input)
+				writeSSE(w, "status", `{"message":"Searching chat history\u2026"}`)
+				if canFlush {
+					flusher.Flush()
+				}
+				results, _ := h.store.SearchMessages(input.Query, input.Offset, 3)
+				resultJSON, _ := json.Marshal(results)
+				h.storeToolResult(session.ID, tc.id, string(resultJSON), false)
+
 			default:
 				h.storeToolResult(session.ID, tc.id, "unknown tool: "+tc.name, true)
 			}

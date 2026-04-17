@@ -74,6 +74,8 @@ When writing vault pages, use [[wikilinks]] to link to related pages wherever ap
 
 SAFETY RULE: Never delete or overwrite a file unless its content has been confirmed saved to another location first. When reorganising the vault, always save_to_vault the updated content before calling delete_item on the original.
 
+When the user signals recall — phrases like "didn't we talk about", "what did I say about", "remember when", or any question whose answer may lie in a past conversation — use search_chat_history before responding. Each call scans 3 sessions; call again with offset+3 to go further back. Stop after a reasonable number of calls without a relevant hit (do not search more than offset 50). Never search chat history when the user is sharing new information.
+
 Do not mention Claude, Anthropic, or any underlying model. You are autowiki.`
 
 // toolDefinitions contains all tool schemas sent in every request.
@@ -86,6 +88,21 @@ var toolDefinitions = []any{
 	deleteItemToolDefinition,
 	saveAttachmentNotesToolDefinition,
 	saveToVaultToolDefinition,
+	searchChatHistoryToolDefinition,
+}
+
+// searchChatHistoryToolDefinition lets the LLM search across past chat sessions.
+var searchChatHistoryToolDefinition = map[string]any{
+	"name":        "search_chat_history",
+	"description": "Search through past conversation sessions for a keyword or topic. Scans 3 sessions per call, newest first. Call again with offset+3 to look further back. Max offset is 50. Returns session date, role, and a snippet of each matching message.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query":  map[string]any{"type": "string", "description": "The keyword or phrase to search for."},
+			"offset": map[string]any{"type": "integer", "description": "Number of sessions to skip (default 0). Increment by 3 each call to paginate.", "default": 0},
+		},
+		"required": []string{"query"},
+	},
 }
 
 // readPageToolDefinition allows the LLM to fetch the full content of a vault page.

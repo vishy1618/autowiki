@@ -270,4 +270,129 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 			t.Errorf("expected 0 messages, got %d", len(msgs))
 		}
 	})
+
+	t.Run("SearchMessages_WhenNoSessions_ReturnsEmpty", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+
+		results, err := cs.SearchMessages("anything", 0, 3)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("expected 0 results, got %d", len(results))
+		}
+	})
+
+	t.Run("SearchMessages_WhenNoMatch_ReturnsEmpty", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		sess, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: sess.ID, Role: "user", Content: "hello world"})
+
+		results, err := cs.SearchMessages("zebra", 0, 3)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("expected 0 results for non-matching query, got %d", len(results))
+		}
+	})
+
+	t.Run("SearchMessages_MatchesUserMessages", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		sess, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: sess.ID, Role: "user", Content: "I love Go programming"})
+
+		results, err := cs.SearchMessages("go programming", 0, 3)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Role != "user" {
+			t.Errorf("role: want %q, got %q", "user", results[0].Role)
+		}
+	})
+
+	t.Run("SearchMessages_MatchesAssistantMessages", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		sess, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: sess.ID, Role: "assistant", Content: "Go is a statically typed language"})
+
+		results, err := cs.SearchMessages("statically typed", 0, 3)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Role != "assistant" {
+			t.Errorf("role: want %q, got %q", "assistant", results[0].Role)
+		}
+	})
+
+	t.Run("SearchMessages_SkipsToolResultMessages", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		sess, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: sess.ID, Role: "tool_result", Content: "tool result about gophers"})
+
+		results, err := cs.SearchMessages("gophers", 0, 3)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("expected tool_result messages to be skipped, got %d results", len(results))
+		}
+	})
+
+	t.Run("SearchMessages_SnippetsTrimmedTo300Chars", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		sess, _ := cs.ResolveSession()
+		long := "needle " + string(make([]byte, 400)) // >300 chars total
+		_ = cs.AppendMessage(store.Message{SessionID: sess.ID, Role: "user", Content: long})
+
+		results, err := cs.SearchMessages("needle", 0, 3)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if len(results[0].Snippet) > 300 {
+			t.Errorf("snippet length: want ≤300, got %d", len(results[0].Snippet))
+		}
+	})
+
+	t.Run("SearchMessages_SessionOffset_SkipsNewestSessions", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+
+		// Create 2 sessions: newer has "alpha", older has "beta"
+		older, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: older.ID, Role: "user", Content: "beta content"})
+		stale := older
+		stale.LastActiveAt = time.Now().Add(-31 * time.Minute)
+		_ = cs.UpdateSession(stale)
+
+		newer, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: newer.ID, Role: "user", Content: "alpha content"})
+
+		// offset=1 skips the newest session — should only find "beta" not "alpha"
+		results, err := cs.SearchMessages("content", 1, 3)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result at offset 1, got %d", len(results))
+		}
+		if results[0].Snippet != "beta content" {
+			t.Errorf("snippet: want %q, got %q", "beta content", results[0].Snippet)
+		}
+	})
 }
