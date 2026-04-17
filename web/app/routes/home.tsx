@@ -359,7 +359,7 @@ export default function Home() {
         const last = next[next.length - 1];
         if (last && isMessage(last) && last.role === "assistant" && last.streaming) {
           if (last.content) {
-            next[next.length - 1] = { ...last, streaming: false, createdAt: new Date().toISOString() };
+            next[next.length - 1] = { ...last, statusMessage: undefined, streaming: false, createdAt: new Date().toISOString() };
           } else {
             next.pop();
           }

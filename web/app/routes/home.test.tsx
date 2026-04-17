@@ -432,13 +432,39 @@ describe("Home — chat UI", () => {
     resolveUpload(new Response(JSON.stringify({ path: "_attachments/photo.png" }), { status: 200 }));
   });
 
-  it("shows status message during streaming", async () => {
-    mockFetch({
-      "/api/chat": [chatSSE(
-        "event: status\ndata: {\"message\":\"Reading programming/go.md\u2026\"}\n\n",
-        SSE_DONE
-      )],
+  /**
+   * SSE response that pauses mid-stream. `firstChunks` are enqueued right
+   * away; the stream blocks until `resume()` is called, then `secondChunks`
+   * are enqueued and the stream closes. This lets tests assert on transient
+   * DOM state that React renders between the two batches.
+   */
+  function pausedChatSSE(firstChunks: string[], secondChunks: string[]) {
+    const encoder = new TextEncoder();
+    let resume!: () => void;
+    const gate = new Promise<void>((r) => { resume = r; });
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (const c of firstChunks) controller.enqueue(encoder.encode(c));
+        await gate;
+        for (const c of secondChunks) controller.enqueue(encoder.encode(c));
+        controller.close();
+      },
     });
+    return {
+      response: new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+      resume,
+    };
+  }
+
+  it("shows status message during streaming", async () => {
+    const { response, resume } = pausedChatSSE(
+      ["event: status\ndata: {\"message\":\"Reading programming/go.md\u2026\"}\n\n"],
+      [SSE_DONE]
+    );
+    mockFetch({ "/api/chat": [response] });
     const user = userEvent.setup();
     renderHome();
     await waitFor(() =>
@@ -446,19 +472,22 @@ describe("Home — chat UI", () => {
     );
     await user.type(screen.getByPlaceholderText(/message autowiki/i), "tell me about Go");
     await user.click(screen.getByRole("button", { name: /send/i }));
+    // Stream is paused — React has rendered the status-only state.
     await waitFor(() =>
       expect(screen.getByText(/Reading programming\/go\.md/)).toBeInTheDocument()
     );
+    act(() => resume());
   });
 
   it("status message is replaced by the next one", async () => {
-    mockFetch({
-      "/api/chat": [chatSSE(
+    const { response, resume } = pausedChatSSE(
+      [
         "event: status\ndata: {\"message\":\"Reading first.md\u2026\"}\n\n",
         "event: status\ndata: {\"message\":\"Reading second.md\u2026\"}\n\n",
-        SSE_DONE
-      )],
-    });
+      ],
+      [SSE_DONE]
+    );
+    mockFetch({ "/api/chat": [response] });
     const user = userEvent.setup();
     renderHome();
     await waitFor(() =>
@@ -466,10 +495,12 @@ describe("Home — chat UI", () => {
     );
     await user.type(screen.getByPlaceholderText(/message autowiki/i), "tell me about Go");
     await user.click(screen.getByRole("button", { name: /send/i }));
+    // Stream is paused — both status events have been processed.
     await waitFor(() => {
       expect(screen.getByText(/Reading second\.md/)).toBeInTheDocument();
       expect(screen.queryByText(/Reading first\.md/)).not.toBeInTheDocument();
     });
+    act(() => resume());
   });
 
   it("redirects to /login when /api/chat returns 401", async () => {
