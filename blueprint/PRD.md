@@ -49,6 +49,7 @@ Each story follows the INVEST principle: Independent, Negotiable, Valuable, Esti
 | [US-12](./user-stories/US-12.md) | Check dream state history | Vault Maintenance |
 | [US-13](./user-stories/US-13.md) | Sliding session expiry | Auth |
 | [US-14](./user-stories/US-14.md) | Search past conversations | Knowledge Retrieval |
+| [US-15](./user-stories/US-15.md) | Search the web and fetch URLs | Knowledge Capture |
 
 ---
 
