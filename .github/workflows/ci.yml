@@ -47,17 +47,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build frontend
-        run: cd web && npm ci && npm run build
+      - name: Install frontend dependencies
+        run: cd web && npm ci
 
-      - name: Copy built assets
-        run: rm -rf public && mkdir -p public && cp -r web/build/client/. public/
+      - name: Build
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 CGO_CFLAGS="" make build
 
-      - name: Build binary
-        run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -ldflags="-s -w -X main.version=${{ github.sha }}" \
-            -o bin/autowiki-linux-amd64 ./cmd/server
+      - name: Rename binary for release
+        run: mv bin/autowiki bin/autowiki-linux-amd64
 
       - name: Publish latest release
         env:

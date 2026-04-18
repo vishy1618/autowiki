@@ -53,6 +53,13 @@ SESSION_SECRET=<random base64 string>
 
 `ALLOWED_EMAIL` is the single Google account permitted to sign in — this is a single-user, local-only tool.
 
+### Testing
+
+```bash
+go install gotest.tools/gotestsum@latest   # one-time install
+make test
+```
+
 ### Build & run
 
 ```bash
