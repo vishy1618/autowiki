@@ -10,6 +10,7 @@ import (
 type Config struct {
 	VaultPath       string      `yaml:"vault_path"`
 	ServerPort      int         `yaml:"server_port"`
+	BaseURL         string      `yaml:"base_url"`
 	AnthropicAPIKey string      `yaml:"anthropic_api_key"`
 	PebblePath      string      `yaml:"pebble_path"`
 	ChatModel       string      `yaml:"chat_model"`
@@ -40,6 +41,11 @@ func Load(path string) (*Config, error) {
 	// Default SERVER_PORT to 8080 if not set so the YAML parses as a valid int.
 	if os.Getenv("PORT") == "" {
 		os.Setenv("PORT", "8080")
+	}
+	// Default BASE_URL to localhost so local dev works without extra config.
+	if os.Getenv("BASE_URL") == "" {
+		port := os.Getenv("PORT")
+		os.Setenv("BASE_URL", "http://localhost:"+port)
 	}
 
 	expanded := os.ExpandEnv(string(data))

@@ -1,5 +1,6 @@
 vault_path: ${VAULT_PATH}
 server_port: ${PORT}
+base_url: ${BASE_URL}
 anthropic_api_key: ${ANTHROPIC_API_KEY}
 pebble_path: ${PEBBLE_PATH}
 chat_model: ${CHAT_MODEL}

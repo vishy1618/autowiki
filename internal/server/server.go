@@ -50,7 +50,7 @@ func (s *Server) routes() {
 		GoogleClientSecret: s.cfg.Auth.GoogleClientSecret,
 		AllowedEmail:       s.cfg.Auth.AllowedEmail,
 		SessionSecret:      s.cfg.Auth.SessionSecret,
-		BaseURL:            fmt.Sprintf("http://localhost:%d", s.cfg.ServerPort),
+		BaseURL:            s.cfg.BaseURL,
 	}
 	authHandler := auth.NewHandler(authCfg, s.sessions)
 	mw := auth.NewMiddleware(s.sessions)
