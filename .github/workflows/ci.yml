@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test-go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+
+  test-ui:
+    name: UI tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cd web && npm ci && npm test
+
+  release:
+    name: Build and release
+    needs: [test-go, test-ui]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build frontend
+        run: cd web && npm ci && npm run build
+
+      - name: Copy built assets
+        run: rm -rf public && mkdir -p public && cp -r web/build/client/. public/
+
+      - name: Build binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w -X main.version=${{ github.sha }}" \
+            -o bin/autowiki-linux-amd64 ./cmd/server
+
+      - name: Publish latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes 2>/dev/null || true
+          git push --delete origin latest 2>/dev/null || true
+          gh release create latest \
+            --title "Latest ($(git rev-parse --short HEAD))" \
+            --notes "Built from \`${{ github.sha }}\` on $(date -u '+%Y-%m-%d %H:%M UTC')" \
+            --prerelease \
+            bin/autowiki-linux-amd64
