@@ -12,7 +12,7 @@ Inspired by [Andrej Karpathy's LLM Wiki pattern](https://x.com/karpathy/status/1
 - **Web search & fetch** — Claude can search the web and read URLs during a conversation
 - **Ask questions** — Claude searches your vault to answer from what you've already saved
 - **Chat history** — infinite-scroll timeline across all past sessions
-- **Nightly consolidation** — a "dream state" goroutine runs between 1–5 am to reorganise and cross-link the vault
+- **Nightly consolidation** — a "dream state" goroutine runs in a configurable UTC window (default 19–23 UTC ≈ 1–5 am IST) to reorganise and cross-link the vault
 
 ## Stack
 
