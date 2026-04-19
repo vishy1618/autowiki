@@ -1054,6 +1054,302 @@ func TestHandler_PostChat_ServerToolUseBlockDoesNotDispatchAsCustomTool(t *testi
 	}
 }
 
+// ── error path helpers ────────────────────────────────────────────────────────
+
+// errReader always returns an error, causing bufio.Scanner to set Err().
+type errReader struct{ err error }
+
+func (r *errReader) Read(p []byte) (int, error) { return 0, r.err }
+
+// errBodyStreamer returns a body reader that immediately errors, triggering
+// the scanErr path in scanStream.
+type errBodyStreamer struct{}
+
+func (s *errBodyStreamer) Stream(_ context.Context, _ []store.Message, _ string, _ string, _ []llm.Attachment) (io.ReadCloser, error) {
+	return io.NopCloser(&errReader{err: errors.New("connection reset")}), nil
+}
+
+// errAfterNStreamer succeeds for the first succeedN calls then returns an error.
+type errAfterNStreamer struct {
+	body     string
+	succeedN int
+	callN    int
+}
+
+func (s *errAfterNStreamer) Stream(_ context.Context, _ []store.Message, _ string, _ string, _ []llm.Attachment) (io.ReadCloser, error) {
+	s.callN++
+	if s.callN <= s.succeedN {
+		return io.NopCloser(strings.NewReader(s.body)), nil
+	}
+	return nil, errors.New("stream error")
+}
+
+// stubChatStore wraps a real store and can be configured to fail specific operations.
+type stubChatStore struct {
+	inner          store.ChatStore
+	failResolve    bool
+	failAppend     bool
+	failList       bool
+	failListAfterN int
+	listCallN      int
+}
+
+func newStubChatStore() *stubChatStore {
+	return &stubChatStore{inner: store.NewMemChatStore()}
+}
+
+func (s *stubChatStore) ResolveSession() (store.ChatSession, error) {
+	if s.failResolve {
+		return store.ChatSession{}, errors.New("resolve error")
+	}
+	return s.inner.ResolveSession()
+}
+
+func (s *stubChatStore) UpdateSession(sess store.ChatSession) error {
+	return s.inner.UpdateSession(sess)
+}
+
+func (s *stubChatStore) AppendMessage(m store.Message) error {
+	if s.failAppend {
+		return errors.New("append error")
+	}
+	return s.inner.AppendMessage(m)
+}
+
+func (s *stubChatStore) ListMessages(id string) ([]store.Message, error) {
+	s.listCallN++
+	if s.failList || (s.failListAfterN > 0 && s.listCallN > s.failListAfterN) {
+		return nil, errors.New("list error")
+	}
+	return s.inner.ListMessages(id)
+}
+
+func (s *stubChatStore) ListSessions(limit, offset int) ([]store.ChatSession, error) {
+	return s.inner.ListSessions(limit, offset)
+}
+
+func (s *stubChatStore) SearchMessages(q string, so, sl int) ([]store.MessageSearchResult, error) {
+	return s.inner.SearchMessages(q, so, sl)
+}
+
+// ── error path tests ──────────────────────────────────────────────────────────
+
+func TestHandler_PostChat_AttachmentWithNoDescription_InjectsPlainContext(t *testing.T) {
+	// Arrange — non-PDF attachment with empty description (the else branch).
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	attachPath, _ := vm.SaveAttachment("data.csv", []byte("a,b,c"))
+	_ = vm.WriteAttachmentMeta(attachPath, vault.AttachmentMeta{
+		ID:           "att_csv",
+		OriginalName: "data.csv",
+		MediaType:    "text/csv",
+		Description:  "",
+	})
+
+	cs := store.NewMemChatStore()
+	streamer := &stubStreamer{body: minimalAnthropicSSE}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"analyse this"}, "attachment_ids": {attachPath}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — context line contains filename but no " — description" separator.
+	var userContent string
+	for _, msg := range streamer.capturedMsgs {
+		if msg.Role == "user" {
+			userContent = msg.Content
+			break
+		}
+	}
+	if !strings.Contains(userContent, "data.csv") {
+		t.Errorf("expected filename in LLM context, got %q", userContent)
+	}
+	if strings.Contains(userContent, " \u2014 ") {
+		t.Errorf("plain attachment must not include description separator, got %q", userContent)
+	}
+}
+
+func TestHandler_PostChat_PdfAttachmentDataReadError_SkipsAttachment(t *testing.T) {
+	// Arrange — PDF meta exists but data file is missing; ReadAttachmentData fails.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	attachPath := "_attachments/missing.pdf"
+	_ = vm.WriteAttachmentMeta(attachPath, vault.AttachmentMeta{
+		ID:           "att_missing",
+		OriginalName: "missing.pdf",
+		MediaType:    "application/pdf",
+	})
+
+	cs := store.NewMemChatStore()
+	streamer := &stubStreamer{body: minimalAnthropicSSE}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"summarise this"}, "attachment_ids": {attachPath}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — request succeeds; failed PDF is silently skipped.
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if len(streamer.capturedAttachments) != 0 {
+		t.Errorf("expected 0 attachments sent to LLM (PDF skipped), got %d", len(streamer.capturedAttachments))
+	}
+}
+
+func TestHandler_PostChat_StreamScanError_EmitsErrorSSE(t *testing.T) {
+	// Arrange — body reader errors immediately, causing scanner.Err() != nil.
+	h := newTestHandler(t, &errBodyStreamer{})
+	form := url.Values{"message": {"hello"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — error SSE event emitted.
+	hasError := false
+	for _, ev := range parseSSE(t, w.Body.String()) {
+		if ev.event == "error" {
+			hasError = true
+			break
+		}
+	}
+	if !hasError {
+		t.Errorf("expected error SSE event on scan error, got: %v", parseSSE(t, w.Body.String()))
+	}
+}
+
+func TestHandler_PostChat_StreamErrorInAgenticLoop_EmitsErrorSSE(t *testing.T) {
+	// Arrange — first stream returns a tool call; second stream fails.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("programming/go.md", "Go notes")
+
+	cs := store.NewMemChatStore()
+	streamer := &errAfterNStreamer{body: readPageToolUseSSE, succeedN: 1}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"look up Go"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — SSE headers already sent so status is 200; error event emitted.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (headers already sent), got %d", w.Code)
+	}
+	hasError := false
+	for _, ev := range parseSSE(t, w.Body.String()) {
+		if ev.event == "error" {
+			hasError = true
+			break
+		}
+	}
+	if !hasError {
+		t.Errorf("expected error SSE event on second stream failure, got: %v", parseSSE(t, w.Body.String()))
+	}
+}
+
+func TestHandler_PostChat_StoreResolveSessionError_Returns500(t *testing.T) {
+	cs := newStubChatStore()
+	cs.failResolve = true
+	h := chat.NewHandler(cs, &stubStreamer{body: minimalAnthropicSSE}, vault.NewManager(t.TempDir()))
+
+	form := url.Values{"message": {"hello"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 on session error, got %d", w.Code)
+	}
+}
+
+func TestHandler_PostChat_StoreAppendMessageError_Returns500(t *testing.T) {
+	cs := newStubChatStore()
+	cs.failAppend = true
+	h := chat.NewHandler(cs, &stubStreamer{body: minimalAnthropicSSE}, vault.NewManager(t.TempDir()))
+
+	form := url.Values{"message": {"hello"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 on append error, got %d", w.Code)
+	}
+}
+
+func TestHandler_PostChat_StoreListMessagesError_Returns500(t *testing.T) {
+	cs := newStubChatStore()
+	cs.failList = true
+	h := chat.NewHandler(cs, &stubStreamer{body: minimalAnthropicSSE}, vault.NewManager(t.TempDir()))
+
+	form := url.Values{"message": {"hello"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 on list error, got %d", w.Code)
+	}
+}
+
+func TestHandler_PostChat_StoreListMessagesErrorInLoop_EmitsErrorSSE(t *testing.T) {
+	// Arrange — first ListMessages (before streaming) succeeds; second (in loop) fails.
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("programming/go.md", "Go notes")
+
+	cs := newStubChatStore()
+	cs.failListAfterN = 1
+	streamer := &stubStreamer{body: readPageToolUseSSE}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"look up Go"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — SSE headers already sent; error event emitted.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (SSE headers already sent), got %d", w.Code)
+	}
+	hasError := false
+	for _, ev := range parseSSE(t, w.Body.String()) {
+		if ev.event == "error" {
+			hasError = true
+			break
+		}
+	}
+	if !hasError {
+		t.Errorf("expected error SSE event on store error in loop, got: %v", parseSSE(t, w.Body.String()))
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 type sseEvent struct {
