@@ -62,12 +62,13 @@ func main() {
 	// Start dream runner as a background goroutine.
 	dreamCtx, dreamCancel := context.WithCancel(context.Background())
 	defer dreamCancel()
-	dreamer := dream.NewRunner(vm, func(ctx context.Context) error {
+	consolidateFn := func(ctx context.Context) error {
 		return dream.Consolidate(ctx, vm, sonnetClient)
-	})
+	}
+	dreamer := dream.NewRunner(vm, consolidateFn)
 	go dreamer.Start(dreamCtx)
 
-	srv := server.New(cfg, sessions, chats, haikuClient, vm, haikuClient, *dev)
+	srv := server.New(cfg, sessions, chats, haikuClient, vm, haikuClient, consolidateFn, *dev)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

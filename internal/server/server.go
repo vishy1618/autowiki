@@ -14,31 +14,34 @@ import (
 	"github.com/suvish/autowiki/internal/chat"
 	"github.com/suvish/autowiki/internal/chatsessions"
 	"github.com/suvish/autowiki/internal/config"
+	"github.com/suvish/autowiki/internal/dream"
 	"github.com/suvish/autowiki/internal/store"
 	"github.com/suvish/autowiki/internal/vault"
 )
 
 type Server struct {
-	cfg      *config.Config
-	mux      *http.ServeMux
-	dev      bool
-	sessions store.SessionStore
-	chats    store.ChatStore
-	streamer chat.Streamer
-	vault    *vault.Manager
-	describer attachment.Describer
+	cfg         *config.Config
+	mux         *http.ServeMux
+	dev         bool
+	sessions    store.SessionStore
+	chats       store.ChatStore
+	streamer    chat.Streamer
+	vault       *vault.Manager
+	describer   attachment.Describer
+	consolidate dream.ConsolidateFn
 }
 
-func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, streamer chat.Streamer, vm *vault.Manager, describer attachment.Describer, dev bool) *Server {
+func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, streamer chat.Streamer, vm *vault.Manager, describer attachment.Describer, consolidate dream.ConsolidateFn, dev bool) *Server {
 	s := &Server{
-		cfg:       cfg,
-		mux:       http.NewServeMux(),
-		dev:       dev,
-		sessions:  sessions,
-		chats:     chats,
-		streamer:  streamer,
-		vault:     vm,
-		describer: describer,
+		cfg:         cfg,
+		mux:         http.NewServeMux(),
+		dev:         dev,
+		sessions:    sessions,
+		chats:       chats,
+		streamer:    streamer,
+		vault:       vm,
+		describer:   describer,
+		consolidate: consolidate,
 	}
 	s.routes()
 	return s
@@ -67,6 +70,7 @@ func (s *Server) routes() {
 	s.mux.Handle("/api/attachments", mw.Require(attachment.NewHandler(s.vault, s.describer)))
 	s.mux.Handle("/api/chat-sessions", mw.Require(chatsessions.NewHandler(s.chats)))
 	s.mux.Handle("/api/chat-sessions/", mw.Require(chatsessions.NewHandler(s.chats)))
+	s.mux.Handle("/api/dream/run", mw.Require(dream.NewHandler(s.consolidate)))
 
 	// All non-API routes serve the SPA unconditionally. Auth is enforced
 	// client-side; the server only protects /api/* data endpoints.
