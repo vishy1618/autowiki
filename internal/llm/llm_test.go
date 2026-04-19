@@ -54,6 +54,33 @@ func anthropicSSEResponse(delta string) string {
 	}, "\n")
 }
 
+func TestClient_Stream_ForwardsSystemPromptExactly(t *testing.T) {
+	want := "custom system prompt for testing"
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			System []systemBlock `json:"system"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got = systemText(body.System)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.Stream(t.Context(), want, []store.Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+
+	if got != want {
+		t.Errorf("expected system prompt %q, got %q", want, got)
+	}
+}
+
 func TestClient_Stream_YieldsTokenDeltas(t *testing.T) {
 	// Arrange — stub server that mimics the Anthropic streaming API
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +121,7 @@ func TestClient_Stream_YieldsTokenDeltas(t *testing.T) {
 	}
 
 	// Act
-	body, err := client.Stream(t.Context(), messages, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", messages, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -210,7 +237,7 @@ func TestClient_Stream_ReturnsErrorOnNon200(t *testing.T) {
 	})
 
 	// Act
-	_, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "x"}}, "", "", nil)
+	_, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "x"}}, nil)
 
 	// Assert
 	if err == nil {
@@ -255,68 +282,7 @@ func TestClient_Stream_IncludesSaveToVaultTool(t *testing.T) {
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_IncludesIndexMDInSystemPrompt(t *testing.T) {
-	// Arrange
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		if !strings.Contains(systemText(body.System), "## Vault Index") {
-			t.Errorf("expected system prompt to contain vault index section, got: %q", systemText(body.System))
-		}
-		if !strings.Contains(systemText(body.System), "existing content") {
-			t.Errorf("expected system prompt to contain indexMD content, got: %q", systemText(body.System))
-		}
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "existing content", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_SystemPromptInstructsLLMToMaintainIndex(t *testing.T) {
-	// Arrange — capture the system prompt the client sends.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		// The system prompt must tell the LLM to keep index.md current so
-		// that the vault has a live map of content after every ingest.
-		if !strings.Contains(systemText(body.System), "index.md") {
-			t.Errorf("expected system prompt to instruct LLM to maintain index.md, got: %q", systemText(body.System))
-		}
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -349,7 +315,7 @@ func TestClient_Stream_SendsAssistantContentBlocksWhenContentIsJSONArray(t *test
 		{Role: "user", Content: "What did I tell you about Go?"},
 	}
 
-	body, err := client.Stream(t.Context(), messages, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", messages, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -430,7 +396,7 @@ func TestClient_Stream_SetsCacheControlOnSecondToLastMessage(t *testing.T) {
 		{Role: "user", Content: "Tell me about Go"},
 	}
 
-	body, err := client.Stream(t.Context(), messages, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", messages, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -482,7 +448,7 @@ func TestClient_Stream_NoCacheControlWithSingleMessage(t *testing.T) {
 		{Role: "user", Content: "Hello"},
 	}
 
-	body, err := client.Stream(t.Context(), messages, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", messages, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -560,7 +526,7 @@ func TestClient_Stream_SendsPdfAttachmentAsDocumentContentBlock(t *testing.T) {
 		{MediaType: "application/pdf", Data: []byte("%PDF-1.4 fake")},
 	}
 
-	body, err := client.Stream(t.Context(), messages, "", "", attachments)
+	body, err := client.Stream(t.Context(), "test system prompt", messages, attachments)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -594,7 +560,7 @@ func TestClient_Stream_IncludesReadPageTool(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -628,33 +594,7 @@ func TestClient_Stream_IncludesSearchChatHistoryTool(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_SystemPromptMentionsSearchChatHistory(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		lower := strings.ToLower(systemText(body.System))
-		if !strings.Contains(lower, "search_chat_history") {
-			t.Errorf("expected system prompt to mention search_chat_history, got: %q", systemText(body.System))
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -688,7 +628,7 @@ func TestClient_Stream_IncludesSearchVaultTool(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -728,7 +668,7 @@ func TestClient_Stream_DoesNotInjectPdfIntoToolResultMessage(t *testing.T) {
 		{MediaType: "application/pdf", Data: []byte("%PDF-1.4 fake")},
 	}
 
-	body, err := client.Stream(t.Context(), messages, "", "", attachments)
+	body, err := client.Stream(t.Context(), "test system prompt", messages, attachments)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -786,154 +726,6 @@ func TestClient_Stream_DoesNotInjectPdfIntoToolResultMessage(t *testing.T) {
 	}
 }
 
-func TestClient_Stream_IncludesSchemaInSystemPromptWhenProvided(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		if !strings.Contains(systemText(body.System), "## Wiki Schema") {
-			t.Errorf("expected system prompt to contain Wiki Schema section, got: %q", systemText(body.System))
-		}
-		if !strings.Contains(systemText(body.System), "my conventions") {
-			t.Errorf("expected system prompt to contain schema content, got: %q", systemText(body.System))
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "my conventions", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_OmitsSchemaSection_WhenSchemaIsEmpty(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		if strings.Contains(systemText(body.System), "## Wiki Schema") {
-			t.Errorf("expected no Wiki Schema section when schema is empty, got: %q", systemText(body.System))
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_SystemPromptInstructsWikilinksAndSchemaConventions(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		if !strings.Contains(systemText(body.System), "[[wikilinks]]") {
-			t.Errorf("expected system prompt to mention [[wikilinks]], got: %q", systemText(body.System))
-		}
-		if !strings.Contains(systemText(body.System), "schema.md") {
-			t.Errorf("expected system prompt to mention schema.md, got: %q", systemText(body.System))
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_SystemPromptForbidsClaimingCannotViewImages(t *testing.T) {
-	// The system prompt must explicitly tell the model to look up the sidecar
-	// rather than deflecting with "I can't view images."
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		// Must instruct the model to search before claiming it cannot see the image.
-		if !strings.Contains(systemText(body.System), "search_vault") || !strings.Contains(systemText(body.System), ".meta.json") {
-			t.Errorf("expected system prompt to tell model to use search_vault/sidecar, got: %q", systemText(body.System))
-		}
-		// Must explicitly prohibit the "I can't view images" deflection before
-		// the model has searched the vault for the attachment description.
-		lower := strings.ToLower(systemText(body.System))
-		if !strings.Contains(lower, "do not say you cannot") && !strings.Contains(lower, "never say you cannot") {
-			t.Errorf("expected system prompt to explicitly prohibit claiming it cannot view images, got: %q", systemText(body.System))
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_SystemPromptExplainsAttachmentSidecars(t *testing.T) {
-	// The system prompt must explain the sidecar convention so the model knows
-	// to use search_vault or read_page on .meta.json to recall attachment details.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		if !strings.Contains(systemText(body.System), "_attachments") {
-			t.Errorf("expected system prompt to mention _attachments directory, got: %q", systemText(body.System))
-		}
-		if !strings.Contains(systemText(body.System), ".meta.json") {
-			t.Errorf("expected system prompt to mention .meta.json sidecar convention, got: %q", systemText(body.System))
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
 func TestClient_Stream_IncludesSaveAttachmentNotesTool(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -961,36 +753,7 @@ func TestClient_Stream_IncludesSaveAttachmentNotesTool(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_SystemPromptRequiresSaveAttachmentNotesForPDFs(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		lower := strings.ToLower(systemText(body.System))
-		if !strings.Contains(lower, "save_attachment_notes") {
-			t.Errorf("expected system prompt to mention save_attachment_notes for PDFs, got: %q", systemText(body.System))
-		}
-		if !strings.Contains(lower, "pdf") {
-			t.Errorf("expected system prompt to mention PDF context for save_attachment_notes, got: %q", systemText(body.System))
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -1024,7 +787,7 @@ func TestClient_Stream_IncludesWebFetchTool(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -1060,7 +823,7 @@ func TestClient_Stream_SendsSystemPromptAsArrayWithCacheControl(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -1095,57 +858,7 @@ func TestClient_Stream_LastToolHasCacheControl(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_SystemPromptMentionsWebFetch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		if !strings.Contains(systemText(body.System), "web_fetch") {
-			t.Errorf("expected system prompt to mention web_fetch, got: %q", systemText(body.System))
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	body.Close()
-}
-
-func TestClient_Stream_SystemPromptMentionsWebSearch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		if !strings.Contains(systemText(body.System), "web_search") {
-			t.Errorf("expected system prompt to mention web_search, got: %q", systemText(body.System))
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -1179,28 +892,24 @@ func TestClient_Stream_IncludesWebSearchTool(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	body.Close()
 }
 
-func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
-	// Arrange — capture the system prompt the client sends.
+
+// ── StreamWithSystem ──────────────────────────────────────────────────────────
+
+func TestClient_StreamWithSystem_ForwardsSystemPromptAndReturnsBody(t *testing.T) {
+	var gotPrompt string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			System []systemBlock `json:"system"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		// The system prompt must tell the LLM how to embed attachments in
-		// vault pages so it doesn't refuse to reference uploaded files.
-		if !strings.Contains(systemText(body.System), "![[") {
-			t.Errorf("expected system prompt to mention Obsidian embed syntax ![[...]], got: %q", systemText(body.System))
-		}
-
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotPrompt = systemText(body.System)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, anthropicSSEResponse("ok"))
@@ -1208,8 +917,123 @@ func TestClient_Stream_SystemPromptMentionsAttachmentEmbedSyntax(t *testing.T) {
 	defer srv.Close()
 
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.StreamWithSystem(t.Context(), "dream prompt", []llm.ConsolidationMessage{
+		{Role: "user", Content: "curate the vault"},
+	})
+	if err != nil {
+		t.Fatalf("StreamWithSystem: %v", err)
+	}
+	body.Close()
 
-	body, err := client.Stream(t.Context(), []store.Message{{Role: "user", Content: "hi"}}, "", "", nil)
+	if gotPrompt != "dream prompt" {
+		t.Errorf("expected system prompt %q, got %q", "dream prompt", gotPrompt)
+	}
+}
+
+func TestClient_StreamWithSystem_ReturnsErrorOnNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"type":"authentication_error"}}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "bad-key", BaseURL: srv.URL})
+	_, err := client.StreamWithSystem(t.Context(), "prompt", []llm.ConsolidationMessage{
+		{Role: "user", Content: "hi"},
+	})
+	if err == nil {
+		t.Fatal("expected error on 401 response, got nil")
+	}
+}
+
+// ── DescribeImage edge cases ───────────────────────────────────────────────────
+
+func TestClient_DescribeImage_ReturnsEmptyStringWhenNoTextBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Response contains only a non-text content block.
+		io.WriteString(w, `{"content":[{"type":"tool_use","id":"x"}],"stop_reason":"end_turn"}`)
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	desc, err := client.DescribeImage(t.Context(), []byte("img"), "image/png")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc != "" {
+		t.Errorf("expected empty description, got %q", desc)
+	}
+}
+
+// ── buildRequestMessages edge cases ──────────────────────────────────────────
+
+func TestClient_Stream_SkipsMalformedToolResultMessage(t *testing.T) {
+	// A tool_result message whose Content is not valid JSON should be skipped
+	// rather than crashing or sending a corrupt message to the API.
+	var capturedMessages []json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		capturedMessages = body.Messages
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	messages := []store.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: `[{"type":"tool_use","id":"t1","name":"read_page","input":{}}]`},
+		{Role: "tool_result", Content: `not valid json`},
+		{Role: "user", Content: "follow up"},
+	}
+
+	body, err := client.Stream(t.Context(), "test system prompt", messages, nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+
+	// Malformed tool_result is skipped; the follow-up user message remains
+	// a standalone user message (not merged with a tool_result block).
+	if len(capturedMessages) == 0 {
+		t.Fatal("expected captured messages")
+	}
+	var lastMsg struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+	}
+	_ = json.Unmarshal(capturedMessages[len(capturedMessages)-1], &lastMsg)
+	if lastMsg.Role != "user" {
+		t.Errorf("expected last message role 'user', got %q", lastMsg.Role)
+	}
+}
+
+// ── addCacheControl edge cases ────────────────────────────────────────────────
+
+func TestClient_Stream_NoCacheControlMutationOnEmptyContentArray(t *testing.T) {
+	// When the second-to-last message has an empty content array (edge case),
+	// addCacheControl should not panic and Stream should succeed.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	// Assistant message with an empty JSON array produces []any{} after parsing,
+	// triggering the len(c) == 0 guard in addCacheControl.
+	messages := []store.Message{
+		{Role: "assistant", Content: `[]`},
+		{Role: "user", Content: "hello"},
+	}
+
+	body, err := client.Stream(t.Context(), "test system prompt", messages, nil)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}

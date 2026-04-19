@@ -22,17 +22,17 @@ import (
 
 // stubStreamer is a fake llm.Streamer that returns a fixed SSE body.
 type stubStreamer struct {
-	body                string
-	err                 error
-	capturedMsgs        []store.Message  // last call's messages
-	capturedAttachments []llm.Attachment // last call's PDF attachments
-	capturedSchema      string           // last call's schema content
+	body                   string
+	err                    error
+	capturedMsgs           []store.Message  // last call's messages
+	capturedAttachments    []llm.Attachment // last call's PDF attachments
+	capturedSystemPrompt   string           // last call's system prompt
 }
 
-func (s *stubStreamer) Stream(_ context.Context, msgs []store.Message, _ string, schema string, attachments []llm.Attachment) (io.ReadCloser, error) {
+func (s *stubStreamer) Stream(_ context.Context, systemPrompt string, msgs []store.Message, attachments []llm.Attachment) (io.ReadCloser, error) {
 	s.capturedMsgs = msgs
 	s.capturedAttachments = attachments
-	s.capturedSchema = schema
+	s.capturedSystemPrompt = systemPrompt
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -503,7 +503,7 @@ type multiResponseStreamer struct {
 	idx    int
 }
 
-func (s *multiResponseStreamer) Stream(_ context.Context, _ []store.Message, _ string, _ string, _ []llm.Attachment) (io.ReadCloser, error) {
+func (s *multiResponseStreamer) Stream(_ context.Context, _ string, _ []store.Message, _ []llm.Attachment) (io.ReadCloser, error) {
 	body := s.bodies[len(s.bodies)-1] // default: last body
 	if s.idx < len(s.bodies) {
 		body = s.bodies[s.idx]
@@ -647,8 +647,138 @@ func TestHandler_PostChat_ForwardsSchemaContentToStreamer(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(streamer.capturedSchema, "my rules") {
-		t.Errorf("expected schema content forwarded to streamer, got %q", streamer.capturedSchema)
+	if !strings.Contains(streamer.capturedSystemPrompt, "my rules") {
+		t.Errorf("expected schema content in system prompt, got %q", streamer.capturedSystemPrompt)
+	}
+}
+
+// captureSystemPrompt makes one minimal POST /api/chat and returns the system
+// prompt that the streamer received. indexMD and schemaContent are pre-written
+// to the vault before the request so buildSystemPrompt picks them up.
+func captureSystemPrompt(t *testing.T, indexMD, schemaContent string) string {
+	t.Helper()
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	if schemaContent != "" {
+		_ = vm.WriteFile("schema.md", schemaContent)
+	}
+	if indexMD != "" {
+		_ = vm.WriteFile("index.md", indexMD)
+	}
+	streamer := &stubStreamer{body: minimalAnthropicSSE}
+	h := chat.NewHandler(store.NewMemChatStore(), streamer, vm)
+	form := url.Values{"message": {"hello"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	return streamer.capturedSystemPrompt
+}
+
+func TestBuildSystemPrompt_InstructsLLMToMaintainIndex(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	if !strings.Contains(prompt, "index.md") {
+		t.Errorf("expected system prompt to instruct LLM to maintain index.md, got: %q", prompt)
+	}
+}
+
+func TestBuildSystemPrompt_InjectsVaultIndexSection(t *testing.T) {
+	prompt := captureSystemPrompt(t, "existing content", "")
+	if !strings.Contains(prompt, "## Vault Index") {
+		t.Errorf("expected system prompt to contain ## Vault Index section")
+	}
+	if !strings.Contains(prompt, "existing content") {
+		t.Errorf("expected system prompt to contain indexMD content")
+	}
+}
+
+func TestBuildSystemPrompt_OmitsVaultIndexWhenEmpty(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	if strings.Contains(prompt, "## Vault Index") {
+		t.Errorf("expected no ## Vault Index section when indexMD is empty")
+	}
+}
+
+func TestBuildSystemPrompt_InjectsSchemaSection(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "# My Schema\n\nmy conventions\n")
+	if !strings.Contains(prompt, "## Wiki Schema") {
+		t.Errorf("expected system prompt to contain ## Wiki Schema section")
+	}
+	if !strings.Contains(prompt, "my conventions") {
+		t.Errorf("expected system prompt to contain schema content")
+	}
+}
+
+func TestBuildSystemPrompt_MentionsWikilinksAndSchemaConventions(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	if !strings.Contains(prompt, "[[wikilinks]]") {
+		t.Errorf("expected system prompt to mention [[wikilinks]]")
+	}
+	if !strings.Contains(prompt, "schema.md") {
+		t.Errorf("expected system prompt to mention schema.md")
+	}
+}
+
+func TestBuildSystemPrompt_ForbidsClaimingCannotViewImages(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	lower := strings.ToLower(prompt)
+	if !strings.Contains(prompt, "search_vault") || !strings.Contains(prompt, ".meta.json") {
+		t.Errorf("expected system prompt to tell model to use search_vault/sidecar")
+	}
+	if !strings.Contains(lower, "do not say you cannot") && !strings.Contains(lower, "never say you cannot") {
+		t.Errorf("expected system prompt to prohibit claiming it cannot view images")
+	}
+}
+
+func TestBuildSystemPrompt_ExplainsAttachmentSidecars(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	if !strings.Contains(prompt, "_attachments") {
+		t.Errorf("expected system prompt to mention _attachments directory")
+	}
+	if !strings.Contains(prompt, ".meta.json") {
+		t.Errorf("expected system prompt to mention .meta.json sidecar convention")
+	}
+}
+
+func TestBuildSystemPrompt_RequiresSaveAttachmentNotesForPDFs(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	lower := strings.ToLower(prompt)
+	if !strings.Contains(lower, "save_attachment_notes") {
+		t.Errorf("expected system prompt to mention save_attachment_notes for PDFs")
+	}
+	if !strings.Contains(lower, "pdf") {
+		t.Errorf("expected system prompt to mention PDF context for save_attachment_notes")
+	}
+}
+
+func TestBuildSystemPrompt_MentionsSearchChatHistory(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	if !strings.Contains(strings.ToLower(prompt), "search_chat_history") {
+		t.Errorf("expected system prompt to mention search_chat_history")
+	}
+}
+
+func TestBuildSystemPrompt_MentionsWebFetch(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	if !strings.Contains(prompt, "web_fetch") {
+		t.Errorf("expected system prompt to mention web_fetch")
+	}
+}
+
+func TestBuildSystemPrompt_MentionsWebSearch(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	if !strings.Contains(prompt, "web_search") {
+		t.Errorf("expected system prompt to mention web_search")
+	}
+}
+
+func TestBuildSystemPrompt_MentionsAttachmentEmbedSyntax(t *testing.T) {
+	prompt := captureSystemPrompt(t, "", "")
+	if !strings.Contains(prompt, "![[") {
+		t.Errorf("expected system prompt to mention Obsidian embed syntax ![[...]]")
 	}
 }
 
@@ -1065,7 +1195,7 @@ func (r *errReader) Read(p []byte) (int, error) { return 0, r.err }
 // the scanErr path in scanStream.
 type errBodyStreamer struct{}
 
-func (s *errBodyStreamer) Stream(_ context.Context, _ []store.Message, _ string, _ string, _ []llm.Attachment) (io.ReadCloser, error) {
+func (s *errBodyStreamer) Stream(_ context.Context, _ string, _ []store.Message, _ []llm.Attachment) (io.ReadCloser, error) {
 	return io.NopCloser(&errReader{err: errors.New("connection reset")}), nil
 }
 
@@ -1076,7 +1206,7 @@ type errAfterNStreamer struct {
 	callN    int
 }
 
-func (s *errAfterNStreamer) Stream(_ context.Context, _ []store.Message, _ string, _ string, _ []llm.Attachment) (io.ReadCloser, error) {
+func (s *errAfterNStreamer) Stream(_ context.Context, _ string, _ []store.Message, _ []llm.Attachment) (io.ReadCloser, error) {
 	s.callN++
 	if s.callN <= s.succeedN {
 		return io.NopCloser(strings.NewReader(s.body)), nil
