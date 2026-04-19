@@ -17,7 +17,7 @@ import (
 
 const (
 	sessionCookieName   = "autowiki_session"
-	sessionDuration     = 30 * time.Minute
+	sessionDuration     = 24 * time.Hour
 	absoluteMaxLifetime = 30 * 24 * time.Hour
 	stateCookieName     = "oauth_state"
 )

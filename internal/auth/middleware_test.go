@@ -23,7 +23,7 @@ func storeWithSession(t *testing.T) (store.SessionStore, string) {
 		Token:             "valid-token",
 		Email:             "allowed@example.com",
 		CreatedAt:         time.Now().UTC(),
-		ExpiresAt:         time.Now().UTC().Add(30 * time.Minute),
+		ExpiresAt:         time.Now().UTC().Add(24 * time.Hour),
 		AbsoluteExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
 	}
 	if err := s.CreateSession(sess); err != nil {
@@ -77,13 +77,13 @@ func TestMiddleware_API_ValidToken_PassesThrough(t *testing.T) {
 }
 
 func TestMiddleware_Rotation_WhenInSecondHalf_IssuesNewCookie(t *testing.T) {
-	// Arrange — session is 14 minutes from expiry (inside the <15 min threshold)
+	// Arrange — session is 11 hours from expiry (inside the <12h threshold)
 	s := store.NewMemStore()
 	sess := store.Session{
 		Token:             "rot-old",
 		Email:             "user@example.com",
 		CreatedAt:         time.Now().UTC(),
-		ExpiresAt:         time.Now().UTC().Add(14 * time.Minute),
+		ExpiresAt:         time.Now().UTC().Add(11 * time.Hour),
 		AbsoluteExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
 	}
 	if err := s.CreateSession(sess); err != nil {
@@ -135,13 +135,13 @@ func TestMiddleware_Rotation_WhenInSecondHalf_IssuesNewCookie(t *testing.T) {
 }
 
 func TestMiddleware_Rotation_WhenInFirstHalf_DoesNotRotate(t *testing.T) {
-	// Arrange — session is 20 minutes from expiry (first half, no rotation needed)
+	// Arrange — session is 13 hours from expiry (first half, no rotation needed)
 	s := store.NewMemStore()
 	sess := store.Session{
 		Token:             "no-rot-token",
 		Email:             "user@example.com",
 		CreatedAt:         time.Now().UTC(),
-		ExpiresAt:         time.Now().UTC().Add(20 * time.Minute),
+		ExpiresAt:         time.Now().UTC().Add(13 * time.Hour),
 		AbsoluteExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
 	}
 	if err := s.CreateSession(sess); err != nil {

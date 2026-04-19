@@ -148,7 +148,7 @@ All pipelines receive `schema.md` as part of the system prompt to enforce wiki c
 Session boundary is determined by inactivity:
 
 - On each incoming message, read `last_active_at` of the current session from Pebble.
-- If `last_active_at` is more than **30 minutes** ago (or no session exists), create a new session.
+- If `last_active_at` is more than **24 hours** ago (or no session exists), create a new session.
 - Otherwise, append the message to the current session and update `last_active_at`.
 
 ---
