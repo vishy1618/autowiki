@@ -47,7 +47,7 @@ autowiki/
 │   ├── vault/         # Read/write markdown, wikilinks, attachments, index/log
 │   ├── llm/           # Claude API client, prompt templates
 │   ├── store/         # Pebble — chat sessions, message history, auth sessions
-│   └── dream/         # Background goroutine, nighttime IST scheduler
+│   └── dream/         # Background goroutine, nightly scheduler (configurable UTC window)
 ├── web/               # Remix app source
 │   └── app/
 ├── public/            # Built Remix output — served by Go
@@ -120,16 +120,11 @@ All pipelines receive `schema.md` as part of the system prompt to enforce wiki c
 ### 4.7 Dream State (`internal/dream`)
 
 - A goroutine launched at server boot.
-- Sleeps until the next 1:00 AM IST (UTC+5:30) window. Runs until 5:00 AM IST.
-- Runs at most once per calendar night (tracks last run date in Pebble).
-- During the window, submits the full vault to the LLM for curation:
-  - Identify orphan pages (no inbound links).
-  - Identify broken `[[wikilinks]]`.
-  - Identify pages that should be merged or split.
-  - Improve cross-references and add missing links.
-  - Reorganize folder structure if inconsistent.
-  - Refresh `index.md` to reflect current vault state.
-- Appends a `## Dream – {date}` entry to `log.md` summarizing all changes made.
+- Sleeps until a random time within a configurable UTC window (default 19:00–23:00 UTC, ≈ 1–5 am IST). Set via `dream.start_hour_utc` / `dream.end_hour_utc` in `config.yaml`.
+- Runs at most once per calendar day (UTC): checks the last 500 chars of `log.md` for today's date before running.
+- Uses `dream.Consolidate(ctx, vm, streamer)`: creates an ephemeral `MemChatStore` session, runs the full agentic loop via `chat.AgenticRunner` (capped at 50 tool calls), then makes a separate summary LLM call.
+- Appends two single-line entries to `log.md`: `dream started` at the beginning, and `dream ended - <20-word summary>` on completion (or `dream ended - error: ...` on failure).
+- Can also be triggered manually via `POST /api/dream/run` (returns 202, runs in background).
 
 ### 4.8 Remix Frontend (`web/`)
 
@@ -240,18 +235,11 @@ Returns the full message history for a single session. The frontend fetches sess
 
 ---
 
-### `GET /api/dream/status`
+### `POST /api/dream/run`
 
-Returns dream state metadata.
+Triggers an immediate dream consolidation in the background (auth required).
 
-**Response**:
-```json
-{
-  "last_run_at": "...",
-  "next_run_at": "...",
-  "last_run_summary": "..."
-}
-```
+**Response**: `202 Accepted` (no body). Progress and result are appended to `log.md`.
 
 ---
 
@@ -325,6 +313,6 @@ auth:
   session_secret: ${SESSION_SECRET}          # used to sign session cookies
 dream:
   enabled: true
-  start_hour_ist: 1    # 1:00 AM IST
-  end_hour_ist: 5      # 5:00 AM IST
+  start_hour_utc: 19   # 19:00 UTC ≈ 1:00 AM IST
+  end_hour_utc: 23     # 23:00 UTC ≈ 5:00 AM IST
 ```
