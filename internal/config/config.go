@@ -28,8 +28,8 @@ type AuthConfig struct {
 
 type DreamConfig struct {
 	Enabled      bool `yaml:"enabled"`
-	StartHourIST int  `yaml:"start_hour_ist"`
-	EndHourIST   int  `yaml:"end_hour_ist"`
+	StartHourUTC int  `yaml:"start_hour_utc"`
+	EndHourUTC   int  `yaml:"end_hour_utc"`
 }
 
 func Load(path string) (*Config, error) {
@@ -68,6 +68,12 @@ func (c *Config) validate() error {
 	}
 	if c.DreamModel == "" {
 		c.DreamModel = "claude-sonnet-4-6"
+	}
+	if c.Dream.StartHourUTC == 0 {
+		c.Dream.StartHourUTC = 19
+	}
+	if c.Dream.EndHourUTC == 0 {
+		c.Dream.EndHourUTC = 23
 	}
 	if c.VaultPath == "" {
 		return fmt.Errorf("VAULT_PATH is required")

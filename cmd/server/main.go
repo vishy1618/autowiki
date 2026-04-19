@@ -65,7 +65,7 @@ func main() {
 	consolidateFn := func(ctx context.Context) error {
 		return dream.Consolidate(ctx, vm, sonnetClient)
 	}
-	dreamer := dream.NewRunner(vm, consolidateFn)
+	dreamer := dream.NewRunner(vm, consolidateFn, cfg.Dream.StartHourUTC, cfg.Dream.EndHourUTC)
 	go dreamer.Start(dreamCtx)
 
 	srv := server.New(cfg, sessions, chats, haikuClient, vm, haikuClient, consolidateFn, *dev)

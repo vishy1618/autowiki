@@ -12,5 +12,5 @@ auth:
   session_secret: ${SESSION_SECRET}
 dream:
   enabled: true
-  start_hour_ist: 1
-  end_hour_ist: 5
+  start_hour_utc: 19
+  end_hour_utc: 23

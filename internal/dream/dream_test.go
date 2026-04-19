@@ -13,8 +13,6 @@ import (
 	"github.com/suvish/autowiki/internal/vault"
 )
 
-var ist = time.FixedZone("IST", 5*3600+30*60)
-
 // stubLLM records calls and returns preset SSE bodies in sequence.
 type stubLLM struct {
 	callCount int
@@ -47,47 +45,50 @@ func sseWithText(text string) string {
 
 // ── Runner scheduling tests ───────────────────────────────────────────────────
 
-func TestPostRunSchedulingTime_IsAfterThe1To5amWindow(t *testing.T) {
-	now := time.Date(2026, 1, 15, 1, 30, 0, 0, ist)
-	postRun := dream.PostRunSchedulingTime(now)
-	postRunIST := postRun.In(ist)
+const testStartUTC = 19
+const testEndUTC = 23
 
-	if postRunIST.Hour() < 5 {
-		t.Errorf("expected PostRunSchedulingTime to be at or after 5am IST, got %02d:%02d IST", postRunIST.Hour(), postRunIST.Minute())
+func TestPostRunSchedulingTime_IsAfterTheConfiguredUTCWindow(t *testing.T) {
+	now := time.Date(2026, 1, 15, 19, 30, 0, 0, time.UTC)
+	postRun := dream.PostRunSchedulingTime(now, testEndUTC)
+	postRunUTC := postRun.UTC()
+
+	if postRunUTC.Hour() < testEndUTC {
+		t.Errorf("expected PostRunSchedulingTime to be at or after %d UTC, got %02d:%02d UTC", testEndUTC, postRunUTC.Hour(), postRunUTC.Minute())
 	}
 }
 
 func TestNextFireTime_AfterPostRunSchedulingTime_AlwaysReturnsTomorrow(t *testing.T) {
-	now := time.Date(2026, 1, 15, 1, 30, 0, 0, ist)
-	postRun := dream.PostRunSchedulingTime(now)
+	now := time.Date(2026, 1, 15, 19, 30, 0, 0, time.UTC)
+	postRun := dream.PostRunSchedulingTime(now, testEndUTC)
 
 	for i := 0; i < 200; i++ {
-		fire := dream.NextFireTime(postRun)
-		fireIST := fire.In(ist)
-		nowIST := now.In(ist)
-		if fireIST.Year() == nowIST.Year() && fireIST.YearDay() == nowIST.YearDay() {
-			t.Fatalf("NextFireTime returned same-day fire time after PostRunSchedulingTime: %v", fireIST)
+		fire := dream.NextFireTime(postRun, testStartUTC, testEndUTC)
+		fireUTC := fire.UTC()
+		nowUTC := now.UTC()
+		if fireUTC.Year() == nowUTC.Year() && fireUTC.YearDay() == nowUTC.YearDay() {
+			t.Fatalf("NextFireTime returned same-day fire time after PostRunSchedulingTime: %v", fireUTC)
 		}
 	}
 }
 
-func TestNextFireTime_IsInOneTo5amISTWindow(t *testing.T) {
+func TestNextFireTime_IsInConfiguredUTCWindow(t *testing.T) {
 	for i := 0; i < 200; i++ {
-		fire := dream.NextFireTime(time.Now())
-		fireIST := fire.In(ist)
-		h := fireIST.Hour()
-		m := fireIST.Minute()
-		s := fireIST.Second()
+		fire := dream.NextFireTime(time.Now(), testStartUTC, testEndUTC)
+		fireUTC := fire.UTC()
+		h := fireUTC.Hour()
+		m := fireUTC.Minute()
+		s := fireUTC.Second()
 		totalSec := h*3600 + m*60 + s
-		if totalSec < 1*3600 || totalSec >= 5*3600 {
-			t.Fatalf("fire time %v (IST) is outside 1–5 am window", fireIST)
+		if totalSec < testStartUTC*3600 || totalSec >= testEndUTC*3600 {
+			t.Fatalf("fire time %v (UTC) is outside %d–%d UTC window", fireUTC, testStartUTC, testEndUTC)
 		}
 	}
 }
 
 func TestNextFireTime_IsInTheFuture(t *testing.T) {
 	now := time.Now()
-	fire := dream.NextFireTime(now)
+	fire := dream.NextFireTime(now, testStartUTC, testEndUTC)
 	if !fire.After(now) {
 		t.Fatalf("expected fire time in the future, got %v (now=%v)", fire, now)
 	}
@@ -96,7 +97,7 @@ func TestNextFireTime_IsInTheFuture(t *testing.T) {
 func TestRunner_SkipsConsolidationWhenTodaysEntryExistsInLog(t *testing.T) {
 	dir := t.TempDir()
 	vm := vault.NewManager(dir)
-	today := time.Now().In(ist).Format("2006-01-02")
+	today := time.Now().UTC().Format("2006-01-02")
 	_ = vm.WriteFile("log.md", "## "+today+" dream run\n\nNo changes.\n")
 
 	consolidated := false
@@ -106,7 +107,7 @@ func TestRunner_SkipsConsolidationWhenTodaysEntryExistsInLog(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	r := dream.NewRunner(vm, consolidateFn)
+	r := dream.NewRunner(vm, consolidateFn, testStartUTC, testEndUTC)
 
 	done := make(chan struct{})
 	go func() {
