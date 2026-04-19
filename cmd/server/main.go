@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"io"
 	"log"
 	"log/slog"
 	"os"
@@ -17,18 +16,6 @@ import (
 	"github.com/suvish/autowiki/internal/vault"
 )
 
-// dreamLLMAdapter adapts llm.Client to satisfy dream.ConsolidationStreamer.
-type dreamLLMAdapter struct {
-	client *llm.Client
-}
-
-func (a *dreamLLMAdapter) StreamWithSystem(ctx context.Context, systemPrompt string, messages []dream.ConsolidationMessage) (io.ReadCloser, error) {
-	llmMsgs := make([]llm.ConsolidationMessage, len(messages))
-	for i, m := range messages {
-		llmMsgs[i] = llm.ConsolidationMessage{Role: m.Role, Content: m.Content}
-	}
-	return a.client.StreamWithSystem(ctx, systemPrompt, llmMsgs)
-}
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
@@ -75,8 +62,9 @@ func main() {
 	// Start dream runner as a background goroutine.
 	dreamCtx, dreamCancel := context.WithCancel(context.Background())
 	defer dreamCancel()
-	consolidator := dream.NewConsolidator(vm, &dreamLLMAdapter{client: sonnetClient})
-	dreamer := dream.NewRunner(vm, consolidator.Consolidate)
+	dreamer := dream.NewRunner(vm, func(ctx context.Context) error {
+		return dream.Consolidate(ctx, vm, sonnetClient)
+	})
 	go dreamer.Start(dreamCtx)
 
 	srv := server.New(cfg, sessions, chats, haikuClient, vm, haikuClient, *dev)

@@ -900,50 +900,6 @@ func TestClient_Stream_IncludesWebSearchTool(t *testing.T) {
 }
 
 
-// ── StreamWithSystem ──────────────────────────────────────────────────────────
-
-func TestClient_StreamWithSystem_ForwardsSystemPromptAndReturnsBody(t *testing.T) {
-	var gotPrompt string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			System []systemBlock `json:"system"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		gotPrompt = systemText(body.System)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, anthropicSSEResponse("ok"))
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
-	body, err := client.StreamWithSystem(t.Context(), "dream prompt", []llm.ConsolidationMessage{
-		{Role: "user", Content: "curate the vault"},
-	})
-	if err != nil {
-		t.Fatalf("StreamWithSystem: %v", err)
-	}
-	body.Close()
-
-	if gotPrompt != "dream prompt" {
-		t.Errorf("expected system prompt %q, got %q", "dream prompt", gotPrompt)
-	}
-}
-
-func TestClient_StreamWithSystem_ReturnsErrorOnNon200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":{"type":"authentication_error"}}`, http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-
-	client := llm.NewClient(llm.Config{APIKey: "bad-key", BaseURL: srv.URL})
-	_, err := client.StreamWithSystem(t.Context(), "prompt", []llm.ConsolidationMessage{
-		{Role: "user", Content: "hi"},
-	})
-	if err == nil {
-		t.Fatal("expected error on 401 response, got nil")
-	}
-}
 
 // ── DescribeImage edge cases ───────────────────────────────────────────────────
 

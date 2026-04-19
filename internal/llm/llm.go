@@ -216,58 +216,6 @@ var saveToVaultToolDefinition = map[string]any{
 	},
 }
 
-// ConsolidationMessage matches dream.ConsolidationMessage; redefined here to
-// avoid an import cycle (dream → llm is fine; llm → dream must not happen).
-type ConsolidationMessage struct {
-	Role    string
-	Content string
-}
-
-// StreamWithSystem sends a non-chat consolidation request to the Anthropic API
-// with a caller-provided system prompt and returns the raw SSE body.
-// The caller must close the returned ReadCloser.
-func (c *Client) StreamWithSystem(ctx context.Context, systemPrompt string, messages []ConsolidationMessage) (io.ReadCloser, error) {
-	reqMsgs := make([]requestMessage, len(messages))
-	for i, m := range messages {
-		reqMsgs[i] = requestMessage{Role: m.Role, Content: m.Content}
-	}
-
-	body, err := json.Marshal(streamRequest{
-		Model:     c.cfg.Model,
-		MaxTokens: 4096,
-		Stream:    true,
-		System:    cachedSystemBlocks(systemPrompt),
-		Messages:  reqMsgs,
-		Tools:     toolDefinitions,
-		ToolChoice: map[string]any{
-			"type": "auto",
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshalling request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.cfg.BaseURL+messagesPath, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.cfg.APIKey)
-	req.Header.Set("anthropic-version", anthropicVersion)
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("anthropic API returned %d: %s", resp.StatusCode, string(respBody))
-	}
-	return resp.Body, nil
-}
 
 // Attachment is a file to be sent inline in the current chat turn.
 // Only PDFs are supported; the Data field holds the raw file bytes.
