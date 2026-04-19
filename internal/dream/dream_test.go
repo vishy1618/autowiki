@@ -39,6 +39,12 @@ data: {"type":"message_stop"}
 
 `
 
+// sseWithText builds a minimal SSE body that streams a single text delta.
+func sseWithText(text string) string {
+	return "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":" +
+		"\"" + text + "\"" + "}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+}
+
 // ── Runner scheduling tests ───────────────────────────────────────────────────
 
 func TestPostRunSchedulingTime_IsAfterThe1To5amWindow(t *testing.T) {
@@ -117,7 +123,7 @@ func TestRunner_SkipsConsolidationWhenTodaysEntryExistsInLog(t *testing.T) {
 
 // ── Consolidate tests ─────────────────────────────────────────────────────────
 
-func TestConsolidate_AppendsDatedLogEntry(t *testing.T) {
+func TestConsolidate_LogsDreamStarted(t *testing.T) {
 	// Arrange
 	dir := t.TempDir()
 	vm := vault.NewManager(dir)
@@ -131,8 +137,86 @@ func TestConsolidate_AppendsDatedLogEntry(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	logContent, _ := vm.ReadFile("log.md")
-	today := time.Now().In(ist).Format("2006-01-02")
-	if !strings.Contains(logContent, today) {
-		t.Errorf("expected log.md to contain today's date %q, got: %q", today, logContent)
+	if !strings.Contains(logContent, "dream started") {
+		t.Errorf("expected log.md to contain %q, got: %q", "dream started", logContent)
+	}
+}
+
+func TestConsolidate_LogsDreamEnded(t *testing.T) {
+	// Arrange
+	dir := t.TempDir()
+	vm := vault.NewManager(dir)
+	llm := &stubLLM{bodies: []string{minimalSSE}}
+
+	// Act
+	err := dream.Consolidate(context.Background(), vm, llm)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	logContent, _ := vm.ReadFile("log.md")
+	if !strings.Contains(logContent, "dream ended") {
+		t.Errorf("expected log.md to contain %q, got: %q", "dream ended", logContent)
+	}
+}
+
+func TestConsolidate_DreamEndedContainsLLMSummary(t *testing.T) {
+	// Arrange — first call is the main run, second call is the summary request.
+	dir := t.TempDir()
+	vm := vault.NewManager(dir)
+	llm := &stubLLM{bodies: []string{minimalSSE, sseWithText("Reorganised 3 pages and added wikilinks.")}}
+
+	// Act
+	err := dream.Consolidate(context.Background(), vm, llm)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	logContent, _ := vm.ReadFile("log.md")
+	if !strings.Contains(logContent, "Reorganised 3 pages and added wikilinks.") {
+		t.Errorf("expected log to contain LLM summary, got: %q", logContent)
+	}
+}
+
+func TestConsolidate_SummaryIsTruncatedToMaxLength(t *testing.T) {
+	// Arrange — LLM returns a very long summary on the second call.
+	dir := t.TempDir()
+	vm := vault.NewManager(dir)
+	longSummary := strings.Repeat("x", 500)
+	llm := &stubLLM{bodies: []string{minimalSSE, sseWithText(longSummary)}}
+
+	// Act
+	_ = dream.Consolidate(context.Background(), vm, llm)
+
+	// Assert — the "dream ended" line must not exceed maxSummaryLen chars.
+	logContent, _ := vm.ReadFile("log.md")
+	for _, line := range strings.Split(logContent, "\n") {
+		if strings.Contains(line, "dream ended") && len(line) > dream.MaxSummaryLen+50 {
+			t.Errorf("summary line too long (%d chars): %q", len(line), line)
+		}
+	}
+}
+
+func TestConsolidate_LogLinesContainNoNewlines(t *testing.T) {
+	// Arrange
+	dir := t.TempDir()
+	vm := vault.NewManager(dir)
+	llm := &stubLLM{bodies: []string{minimalSSE}}
+
+	// Act
+	_ = dream.Consolidate(context.Background(), vm, llm)
+
+	// Assert — each non-empty line written by Consolidate must be a single line.
+	logContent, _ := vm.ReadFile("log.md")
+	for _, line := range strings.Split(logContent, "\n") {
+		if strings.Contains(line, "dream") && strings.ContainsAny(line, "\r") {
+			t.Errorf("log line contains carriage return: %q", line)
+		}
+	}
+	// The whole log must not contain a blank line between dream entries.
+	if strings.Contains(logContent, "dream started\n\n") || strings.Contains(logContent, "dream ended\n\n") {
+		t.Errorf("log entries must not be followed by blank lines, got: %q", logContent)
 	}
 }

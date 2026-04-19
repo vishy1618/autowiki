@@ -1,7 +1,9 @@
 package dream
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -100,22 +102,29 @@ func (r *Runner) Start(ctx context.Context) {
 
 const dreamSystemPrompt = `You are an autonomous wiki curator performing an overnight consolidation of a personal Obsidian vault.
 
-Your goal is to improve the structure, cross-references, and completeness of the vault. Work autonomously: list the vault, read pages, reorganise, add wikilinks, and save changes.
+AUTONOMY RULE: Act immediately and decisively. Never ask for confirmation, permission, or whether to proceed. Make all changes now — do not prepare changes and then ask to save them.
+
+Your goal is to improve the structure, cross-references, and completeness of the vault. Start with list_vault to get an overview, then work in small batches: use read_page_partial (not read_page) to scan pages efficiently, and call save_to_vault as soon as you have improvements ready for a batch. Do not read every page before saving anything.
+
+TOKEN EFFICIENCY: Prefer read_page_partial over read_page. Only use read_page when you need to rewrite a page in full. Work and save in batches of 5–10 pages rather than reading everything first.
 
 SAFETY RULE: Never delete or overwrite a file unless its content has been confirmed saved to another location first. When reorganising, always save_to_vault updated content before deleting the original.
 
 Use [[wikilinks]] to connect related pages. Prefer additive changes; only restructure when clearly beneficial.
 
-You have access to these tools: save_to_vault, read_page, search_vault, list_vault, read_page_partial, move_page, delete_item.
+You have access to these tools: save_to_vault, read_page, search_vault, list_vault, read_page_partial, move_page, delete_item.`
 
-When you are done, call save_to_vault with any pages you have changed or created.`
+// MaxSummaryLen is the maximum character length of the dream summary log line.
+const MaxSummaryLen = 200
 
 // maxDreamToolCalls is the cap on tool dispatches per consolidation run.
 const maxDreamToolCalls = 50
 
 // Consolidate performs one overnight vault consolidation using the agentic
-// loop and appends a dated entry to log.md on success.
+// loop and appends start/end log entries to log.md.
 func Consolidate(ctx context.Context, vm *vault.Manager, streamer Streamer) error {
+	_ = vm.AppendLog("dream started")
+
 	cs := store.NewMemChatStore()
 	session, err := cs.ResolveSession()
 	if err != nil {
@@ -140,9 +149,69 @@ func Consolidate(ctx context.Context, vm *vault.Manager, streamer Streamer) erro
 
 	runner := chat.NewAgenticRunner(streamer, cs, vm)
 	if err := runner.Run(ctx, session.ID, dreamSystemPrompt, firstBody, io.Discard, maxDreamToolCalls); err != nil {
+		_ = vm.AppendLog(fmt.Sprintf("dream ended - error: %v", err))
 		return fmt.Errorf("dream: agentic run: %w", err)
 	}
 
-	today := time.Now().In(ist).Format("2006-01-02")
-	return vm.AppendLog(fmt.Sprintf("## %s dream run\n\nRun completed.\n", today))
+	summary := requestSummary(ctx, cs, session.ID, streamer)
+	_ = vm.AppendLog(fmt.Sprintf("dream ended - %s", summary))
+	return nil
+}
+
+// requestSummary asks the LLM for a short summary of what it just did,
+// using the full session history as context. Truncates to MaxSummaryLen.
+func requestSummary(ctx context.Context, cs store.ChatStore, sessionID string, streamer Streamer) string {
+	_ = cs.AppendMessage(store.Message{
+		SessionID: sessionID,
+		Role:      "user",
+		Content:   "In 20 words or fewer, summarise the changes you made. No questions. No punctuation at the end.",
+	})
+	history, err := cs.ListMessages(sessionID)
+	if err != nil {
+		return "run completed"
+	}
+	body, err := streamer.Stream(ctx, dreamSystemPrompt, history, nil)
+	if err != nil {
+		return "run completed"
+	}
+	defer body.Close()
+	summary := firstLine(extractText(body))
+	if len(summary) > MaxSummaryLen {
+		summary = summary[:MaxSummaryLen-1] + "…"
+	}
+	return summary
+}
+
+// extractText scans an Anthropic SSE body and returns the concatenated text deltas.
+func extractText(body io.Reader) string {
+	var sb strings.Builder
+	scanner := bufio.NewScanner(body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		raw := strings.TrimPrefix(line, "data: ")
+		var payload struct {
+			Delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(raw), &payload); err == nil && payload.Delta.Type == "text_delta" {
+			sb.WriteString(payload.Delta.Text)
+		}
+	}
+	return sb.String()
+}
+
+// firstLine returns the first non-empty line of s.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
