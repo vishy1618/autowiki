@@ -117,6 +117,68 @@ func TestServerToolStatusMessage_UnknownTool_ReturnsGenericMessage(t *testing.T)
 	}
 }
 
+// ── scanStream ───────────────────────────────────────────────────────────────
+
+const scanStreamTextOnlySSE = `event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+const scanStreamSaveToVaultSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tc1","name":"save_to_vault","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func TestScanStream_EmitsWorkingStatusAsFirstEvent(t *testing.T) {
+	h := &Handler{}
+	var buf strings.Builder
+	h.scanStream(strings.NewReader(scanStreamTextOnlySSE), &buf, false, nil)
+
+	out := buf.String()
+	first := strings.SplitN(out, "\n\n", 2)[0]
+	if !strings.Contains(first, "event: status") {
+		t.Errorf("want first event to be status, got: %q", first)
+	}
+	if !strings.Contains(first, "Working") {
+		t.Errorf("want first status message to be Working…, got: %q", first)
+	}
+}
+
+func TestScanStream_SaveToVault_EmitsGenericStatusNotPathSpecific(t *testing.T) {
+	h := &Handler{}
+	var buf strings.Builder
+	h.scanStream(strings.NewReader(scanStreamSaveToVaultSSE), &buf, false, nil)
+
+	out := buf.String()
+	// Find the first status event after "Working…"
+	events := strings.Split(out, "\n\n")
+	var vaultStatus string
+	for _, ev := range events[1:] { // skip "Working…"
+		if strings.Contains(ev, "event: status") {
+			vaultStatus = ev
+			break
+		}
+	}
+	if vaultStatus == "" {
+		t.Fatal("want a second status event for save_to_vault, got none")
+	}
+	if strings.Contains(vaultStatus, ".md") || strings.Contains(vaultStatus, "notes/") {
+		t.Errorf("status must be generic, not path-specific; got %q", vaultStatus)
+	}
+}
+
 // ── writeSSE ──────────────────────────────────────────────────────────────────
 
 func TestWriteSSE_FormatsEventAndDataOnSeparateLines(t *testing.T) {

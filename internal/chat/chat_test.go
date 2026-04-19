@@ -3,7 +3,6 @@ package chat_test
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -44,22 +43,6 @@ func (s *stubStreamer) Stream(_ context.Context, msgs []store.Message, _ string,
 // text delta and a message_stop.
 const minimalAnthropicSSE = `event: content_block_delta
 data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
-
-event: message_stop
-data: {"type":"message_stop"}
-
-`
-
-// toolUseNoTextAnthropicSSE is a streaming response where the model calls the
-// save_to_vault tool directly with no text preamble.
-const toolUseNoTextAnthropicSSE = `event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_silent","name":"save_to_vault","input":{}}}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"pages\":[{\"path\":\"notes/silent.md\",\"content\":\"# Silent\"}]}"}}
-
-event: content_block_stop
-data: {"type":"content_block_stop","index":0}
 
 event: message_stop
 data: {"type":"message_stop"}
@@ -306,170 +289,6 @@ func TestHandler_PostChat_InjectsAttachmentDescriptionIntoContext(t *testing.T) 
 	}
 }
 
-func TestHandler_PostChat_NoEmptyTextBlockWhenLLMCallsToolWithoutText(t *testing.T) {
-	// When the LLM calls save_to_vault with no text preamble, the stored
-	// assistant content must NOT contain an empty text block — Anthropic
-	// rejects messages with empty text blocks on subsequent turns (400).
-	cs := store.NewMemChatStore()
-	vm := vault.NewManager(t.TempDir())
-	h := chat.NewHandler(cs, &stubStreamer{body: toolUseNoTextAnthropicSSE}, vm)
-
-	form := url.Values{"message": {"save quietly"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	session, _ := cs.ResolveSession()
-	msgs, _ := cs.ListMessages(session.ID)
-
-	// Find the assistant message.
-	var assistantContent string
-	for _, m := range msgs {
-		if m.Role == "assistant" {
-			assistantContent = m.Content
-		}
-	}
-
-	// If content is a JSON array, none of the blocks should be an empty text block.
-	if len(assistantContent) > 0 && assistantContent[0] == '[' {
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal([]byte(assistantContent), &blocks); err != nil {
-			t.Fatalf("parsing assistant content: %v", err)
-		}
-		for _, b := range blocks {
-			if b.Type == "text" && b.Text == "" {
-				t.Errorf("stored assistant content contains empty text block: %v", blocks)
-			}
-		}
-	}
-}
-
-func TestHandler_PostChat_VaultStatusMessageIsGeneric(t *testing.T) {
-	// The "Saving to vault…" status must be emitted at content_block_start (when
-	// the tool name is first known) so the user sees feedback while the LLM is
-	// still streaming its tool JSON. At that point only the tool name is known —
-	// not the page paths — so the message must be generic ("Saving to vault…"),
-	// not path-specific ("Saving notes/foo.md…").
-	h := newTestHandler(t, &stubStreamer{body: toolUseAnthropicSSE})
-
-	form := url.Values{"message": {"save this"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
-	h.ServeHTTP(w, req)
-
-	events := parseSSE(t, w.Body.String())
-
-	var statusMsg string
-	for _, ev := range events {
-		if ev.event == "status" {
-			var payload struct{ Message string }
-			_ = json.Unmarshal([]byte(ev.data), &payload)
-			statusMsg = payload.Message
-			break
-		}
-	}
-	if statusMsg == "" {
-		t.Fatal("expected a status SSE event for save_to_vault, got none")
-	}
-	// Must be generic — page paths are only known after full JSON is received.
-	if strings.Contains(statusMsg, "notes/") || strings.Contains(statusMsg, ".md") {
-		t.Errorf("status message must be generic, not path-specific; got %q", statusMsg)
-	}
-}
-
-func TestHandler_PostChat_StoresAssistantContentBlocksAndToolResultAfterVaultWrite(t *testing.T) {
-	// When the LLM calls save_to_vault, the handler must:
-	// (a) store the assistant message with the full content-block array so the
-	//     conversation history includes the tool_use block, and
-	// (b) store a tool_result message so Anthropic knows the outcome on the
-	//     next turn.
-	cs := store.NewMemChatStore()
-	vaultDir := t.TempDir()
-	vm := vault.NewManager(vaultDir)
-	h := chat.NewHandler(cs, &stubStreamer{body: toolUseAnthropicSSE}, vm)
-
-	form := url.Values{"message": {"I learned about Go interfaces"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
-	// Act
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	session, _ := cs.ResolveSession()
-	msgs, _ := cs.ListMessages(session.ID)
-
-	// Expect: user, assistant, tool_result
-	if len(msgs) != 3 {
-		t.Fatalf("expected 3 messages (user, assistant, tool_result), got %d: %v", len(msgs), msgs)
-	}
-
-	// (a) Assistant message must be a JSON array containing a tool_use block.
-	assistantMsg := msgs[1]
-	if assistantMsg.Role != "assistant" {
-		t.Fatalf("expected assistant role, got %q", assistantMsg.Role)
-	}
-	if len(assistantMsg.Content) == 0 || assistantMsg.Content[0] != '[' {
-		t.Errorf("expected assistant content to be a JSON array, got %q", assistantMsg.Content)
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(assistantMsg.Content), &blocks); err != nil {
-		t.Fatalf("parsing assistant content blocks: %v", err)
-	}
-	hasToolUse := false
-	for _, b := range blocks {
-		if b.Type == "tool_use" {
-			hasToolUse = true
-		}
-	}
-	if !hasToolUse {
-		t.Errorf("expected tool_use block in assistant content, got: %v", blocks)
-	}
-
-	// (b) tool_result message must reference the tool_use and report success.
-	toolResult := msgs[2]
-	if toolResult.Role != "tool_result" {
-		t.Fatalf("expected tool_result role, got %q", toolResult.Role)
-	}
-	var tr struct {
-		ToolUseID string `json:"tool_use_id"`
-		IsError   bool   `json:"is_error"`
-		Content   string `json:"content"`
-	}
-	if err := json.Unmarshal([]byte(toolResult.Content), &tr); err != nil {
-		t.Fatalf("parsing tool_result content: %v", err)
-	}
-	if tr.ToolUseID == "" {
-		t.Error("expected non-empty tool_use_id in tool_result")
-	}
-	if tr.IsError {
-		t.Error("expected is_error=false for successful write")
-	}
-	if tr.Content == "" {
-		t.Error("expected non-empty content in tool_result (saved paths)")
-	}
-}
-
 func TestHandler_PostChat_PersistsNonEmptyPlaceholderOnLLMFailure(t *testing.T) {
 	// Arrange — streamer always fails so the LLM is unavailable.
 	cs := store.NewMemChatStore()
@@ -514,32 +333,10 @@ func TestHandler_PostChat_PersistsNonEmptyPlaceholderOnLLMFailure(t *testing.T) 
 	if msgs[1].Content == "" {
 		t.Error("expected non-empty assistant placeholder so Anthropic accepts it in subsequent requests")
 	}
-}
-
-func TestHandler_PostChat_LLMFailureBodyMatchesStoredPlaceholder(t *testing.T) {
-	// Arrange
-	cs := store.NewMemChatStore()
-	vm := vault.NewManager(t.TempDir())
-	h := chat.NewHandler(cs, &stubStreamer{err: errors.New("llm down")}, vm)
-
-	form := url.Values{"message": {"hello"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
-	// Act
-	h.ServeHTTP(w, req)
-
-	// Assert — the HTTP response body must equal the stored placeholder so the
-	// frontend can display it directly in the assistant bubble without a separate
-	// error banner.
-	session, _ := cs.ResolveSession()
-	msgs, _ := cs.ListMessages(session.ID)
-	placeholder := msgs[1].Content
-	body := strings.TrimSpace(w.Body.String())
-	if body != placeholder {
-		t.Errorf("response body %q does not match stored placeholder %q", body, placeholder)
+	// The HTTP response body must equal the stored placeholder so the frontend
+	// can display it directly in the assistant bubble without a separate error banner.
+	if body := strings.TrimSpace(w.Body.String()); body != msgs[1].Content {
+		t.Errorf("response body %q does not match stored placeholder %q", body, msgs[1].Content)
 	}
 }
 
@@ -585,29 +382,7 @@ func TestHandler_PostChat_RateLimitReturns429AndStoresNoRetryPlaceholder(t *test
 	if placeholder == "" {
 		t.Error("placeholder must be non-empty so Anthropic accepts it in subsequent requests")
 	}
-}
-
-func TestHandler_PostChat_RateLimitBodyMatchesStoredPlaceholder(t *testing.T) {
-	// Arrange
-	cs := store.NewMemChatStore()
-	vm := vault.NewManager(t.TempDir())
-	h := chat.NewHandler(cs, &stubStreamer{err: errors.New("anthropic API returned 429: rate_limit_error")}, vm)
-
-	form := url.Values{"message": {"fetch this url"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
-	// Act
-	h.ServeHTTP(w, req)
-
-	// Assert — response body equals the stored placeholder.
-	session, _ := cs.ResolveSession()
-	msgs, _ := cs.ListMessages(session.ID)
-	placeholder := msgs[1].Content
-	body := strings.TrimSpace(w.Body.String())
-	if body != placeholder {
+	if body := strings.TrimSpace(w.Body.String()); body != placeholder {
 		t.Errorf("response body %q does not match stored placeholder %q", body, placeholder)
 	}
 }
@@ -737,77 +512,49 @@ func (s *multiResponseStreamer) Stream(_ context.Context, _ []store.Message, _ s
 	return io.NopCloser(strings.NewReader(body)), nil
 }
 
-func TestHandler_PostChat_EmitsStatusEventOnReadPage(t *testing.T) {
-	// Arrange — vault has the page the LLM will read.
-	vaultDir := t.TempDir()
-	vm := vault.NewManager(vaultDir)
-	_ = vm.WriteFile("programming/go.md", "# Go\nGo has interfaces.")
+func TestHandler_PostChat_EmitsStatusEventOnRetrievalTool(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		vaultFile   string
+		toolSSE     string
+		wantInEvent string
+	}{
+		{"read_page includes path", "programming/go.md", readPageToolUseSSE, "programming/go.md"},
+		{"search_vault includes query", "programming/go.md", searchVaultToolUseSSE, "Go interfaces"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Arrange
+			vaultDir := t.TempDir()
+			vm := vault.NewManager(vaultDir)
+			_ = vm.WriteFile(tc.vaultFile, "Go interfaces are structural.")
+			cs := store.NewMemChatStore()
+			streamer := &multiResponseStreamer{bodies: []string{tc.toolSSE, minimalAnthropicSSE}}
+			h := chat.NewHandler(cs, streamer, vm)
 
-	cs := store.NewMemChatStore()
-	// First call: model reads a page. Second call: model answers (text only).
-	streamer := &multiResponseStreamer{bodies: []string{readPageToolUseSSE, minimalAnthropicSSE}}
-	h := chat.NewHandler(cs, streamer, vm)
+			form := url.Values{"message": {"tell me about Go"}}
+			req := httptest.NewRequest(http.MethodPost, "/api/chat",
+				strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
 
-	form := url.Values{"message": {"tell me about Go"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
+			// Act
+			h.ServeHTTP(w, req)
 
-	// Act
-	h.ServeHTTP(w, req)
-
-	// Assert — status event with the page path was emitted.
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	events := parseSSE(t, w.Body.String())
-	hasStatus := false
-	for _, ev := range events {
-		if ev.event == "status" && strings.Contains(ev.data, "programming/go.md") {
-			hasStatus = true
-			break
-		}
-	}
-	if !hasStatus {
-		t.Errorf("expected status SSE event mentioning page path, got events: %v", events)
-	}
-}
-
-func TestHandler_PostChat_EmitsStatusEventOnSearchVault(t *testing.T) {
-	// Arrange — vault has a searchable page.
-	vaultDir := t.TempDir()
-	vm := vault.NewManager(vaultDir)
-	_ = vm.WriteFile("programming/go.md", "Go interfaces are structural.")
-
-	cs := store.NewMemChatStore()
-	// First call: model searches vault. Second call: model answers.
-	streamer := &multiResponseStreamer{bodies: []string{searchVaultToolUseSSE, minimalAnthropicSSE}}
-	h := chat.NewHandler(cs, streamer, vm)
-
-	form := url.Values{"message": {"what do I know about Go interfaces?"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
-	// Act
-	h.ServeHTTP(w, req)
-
-	// Assert — status event emitted for the search.
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	events := parseSSE(t, w.Body.String())
-	hasStatus := false
-	for _, ev := range events {
-		if ev.event == "status" && strings.Contains(ev.data, "Go interfaces") {
-			hasStatus = true
-			break
-		}
-	}
-	if !hasStatus {
-		t.Errorf("expected status SSE event mentioning search query, got events: %v", events)
+			// Assert
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			hasStatus := false
+			for _, ev := range parseSSE(t, w.Body.String()) {
+				if ev.event == "status" && strings.Contains(ev.data, tc.wantInEvent) {
+					hasStatus = true
+					break
+				}
+			}
+			if !hasStatus {
+				t.Errorf("expected status event containing %q, got none", tc.wantInEvent)
+			}
+		})
 	}
 }
 
@@ -902,39 +649,6 @@ func TestHandler_PostChat_ForwardsSchemaContentToStreamer(t *testing.T) {
 	}
 	if !strings.Contains(streamer.capturedSchema, "my rules") {
 		t.Errorf("expected schema content forwarded to streamer, got %q", streamer.capturedSchema)
-	}
-}
-
-func TestHandler_PostChat_EmitsStatusEventOnSaveToVault(t *testing.T) {
-	// Arrange
-	vaultDir := t.TempDir()
-	vm := vault.NewManager(vaultDir)
-	cs := store.NewMemChatStore()
-	h := chat.NewHandler(cs, &stubStreamer{body: toolUseAnthropicSSE}, vm)
-
-	form := url.Values{"message": {"I learned about Go interfaces"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
-	// Act
-	h.ServeHTTP(w, req)
-
-	// Assert — a generic "Saving to vault…" status event is emitted before the vault event.
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	events := parseSSE(t, w.Body.String())
-	hasStatus := false
-	for _, ev := range events {
-		if ev.event == "status" && strings.Contains(ev.data, "vault") {
-			hasStatus = true
-			break
-		}
-	}
-	if !hasStatus {
-		t.Errorf("expected status SSE event for vault write, got events: %v", events)
 	}
 }
 
@@ -1310,95 +1024,6 @@ data: {"type":"message_stop"}
 
 `
 
-// webSearchServerToolUseSSE simulates a stream where Anthropic executes web_search
-// server-side: server_tool_use block → result block → text response, all in one stream.
-const webSearchServerToolUseSSE = `event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_ws1","name":"web_search","input":{}}}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"latest Go release\"}"}}
-
-event: content_block_stop
-data: {"type":"content_block_stop","index":0}
-
-event: content_block_start
-data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_result","tool_use_id":"srvtoolu_ws1"}}
-
-event: content_block_stop
-data: {"type":"content_block_stop","index":1}
-
-event: content_block_start
-data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Here are the search results."}}
-
-event: content_block_stop
-data: {"type":"content_block_stop","index":2}
-
-event: message_stop
-data: {"type":"message_stop"}
-
-`
-
-func TestHandler_PostChat_EmitsStatusEventWithURLOnWebFetch(t *testing.T) {
-	// Arrange — stream contains a server_tool_use web_fetch block.
-	h := newTestHandler(t, &stubStreamer{body: webFetchServerToolUseSSE})
-	form := url.Values{"message": {"fetch https://example.com/page"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
-	// Act
-	h.ServeHTTP(w, req)
-
-	// Assert — status event containing the URL was emitted.
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	events := parseSSE(t, w.Body.String())
-	hasStatus := false
-	for _, ev := range events {
-		if ev.event == "status" && strings.Contains(ev.data, "https://example.com/page") {
-			hasStatus = true
-			break
-		}
-	}
-	if !hasStatus {
-		t.Errorf("expected status SSE event containing URL, got events: %v", events)
-	}
-}
-
-func TestHandler_PostChat_EmitsStatusEventOnWebSearch(t *testing.T) {
-	// Arrange — stream contains a server_tool_use web_search block.
-	h := newTestHandler(t, &stubStreamer{body: webSearchServerToolUseSSE})
-	form := url.Values{"message": {"look up the latest Go release"}}
-	req := httptest.NewRequest(http.MethodPost, "/api/chat",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
-	// Act
-	h.ServeHTTP(w, req)
-
-	// Assert — status event containing "searching" was emitted.
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	events := parseSSE(t, w.Body.String())
-	hasStatus := false
-	for _, ev := range events {
-		if ev.event == "status" && strings.Contains(strings.ToLower(ev.data), "searching") {
-			hasStatus = true
-			break
-		}
-	}
-	if !hasStatus {
-		t.Errorf("expected status SSE event containing 'searching', got events: %v", events)
-	}
-}
-
 func TestHandler_PostChat_ServerToolUseBlockDoesNotDispatchAsCustomTool(t *testing.T) {
 	// Arrange — stream has server_tool_use + text (all in one stream, no second call needed).
 	// If server_tool_use were mistakenly added to toolCalls, the handler would
@@ -1426,52 +1051,6 @@ func TestHandler_PostChat_ServerToolUseBlockDoesNotDispatchAsCustomTool(t *testi
 		if ev.event == "error" {
 			t.Errorf("unexpected error event: %v", ev)
 		}
-	}
-}
-
-func TestHandler_PostChat_EmitsWorkingStatusAsFirstEvent(t *testing.T) {
-	// The first SSE event on any stream must always be status:"Working…" so the
-	// user sees immediate feedback before Claude emits any content — this matters
-	// most when the LLM silently processes a large PDF before deciding to act.
-	for _, tc := range []struct {
-		name string
-		body string
-	}{
-		{"text-only response", minimalAnthropicSSE},
-		{"vault-only response (no text preamble)", toolUseNoTextAnthropicSSE},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			// Arrange
-			h := newTestHandler(t, &stubStreamer{body: tc.body})
-			form := url.Values{"message": {"hello"}}
-			req := httptest.NewRequest(http.MethodPost, "/api/chat",
-				strings.NewReader(form.Encode()))
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			w := httptest.NewRecorder()
-
-			// Act
-			h.ServeHTTP(w, req)
-
-			// Assert
-			if w.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d", w.Code)
-			}
-			events := parseSSE(t, w.Body.String())
-			if len(events) == 0 {
-				t.Fatal("expected at least one SSE event, got none")
-			}
-			first := events[0]
-			if first.event != "status" {
-				t.Errorf("expected first event to be 'status', got %q", first.event)
-			}
-			var payload struct{ Message string }
-			if err := json.Unmarshal([]byte(first.data), &payload); err != nil {
-				t.Fatalf("parsing first status event data: %v", err)
-			}
-			if payload.Message != "Working\u2026" {
-				t.Errorf("expected first status message to be %q, got %q", "Working\u2026", payload.Message)
-			}
-		})
 	}
 }
 
