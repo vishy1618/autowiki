@@ -296,16 +296,27 @@ func firstLine(s string) string {
 	return s
 }
 
+// PostRunSchedulingTime returns the time to use as "now" when computing the
+// next fire time after a run completes. It returns 6am IST of the same day as
+// now, which is past the 1–5am window, guaranteeing NextFireTime picks tomorrow.
+func PostRunSchedulingTime(now time.Time) time.Time {
+	n := now.In(ist)
+	return time.Date(n.Year(), n.Month(), n.Day(), 6, 0, 0, 0, ist)
+}
+
 // Start loops indefinitely: sleeps until the next 1–5 am IST fire time, then
-// runs RunOnce. Exits when ctx is cancelled.
+// runs RunOnce. After each run it advances the scheduling base past the window
+// so the next fire time is always tomorrow. Exits when ctx is cancelled.
 func (r *Runner) Start(ctx context.Context) {
+	now := time.Now()
 	for {
-		next := NextFireTime(time.Now())
+		next := NextFireTime(now)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Until(next)):
 		}
 		r.RunOnce(ctx)
+		now = PostRunSchedulingTime(time.Now())
 	}
 }

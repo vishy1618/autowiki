@@ -48,6 +48,34 @@ func writePages(t *testing.T, vm *vault.Manager, n int) {
 	}
 }
 
+func TestPostRunSchedulingTime_IsAfterThe1To5amWindow(t *testing.T) {
+	// PostRunSchedulingTime must return a time past the 1–5am IST window so that
+	// NextFireTime(PostRunSchedulingTime(now)) always picks tomorrow.
+	now := time.Date(2026, 1, 15, 1, 30, 0, 0, ist) // 1:30am IST — inside window
+	postRun := dream.PostRunSchedulingTime(now)
+	postRunIST := postRun.In(ist)
+
+	if postRunIST.Hour() < 5 {
+		t.Errorf("expected PostRunSchedulingTime to be at or after 5am IST, got %02d:%02d IST", postRunIST.Hour(), postRunIST.Minute())
+	}
+}
+
+func TestNextFireTime_AfterPostRunSchedulingTime_AlwaysReturnsTomorrow(t *testing.T) {
+	// The combination of PostRunSchedulingTime + NextFireTime must always
+	// produce a fire time in tomorrow's window — never the same calendar day.
+	now := time.Date(2026, 1, 15, 1, 30, 0, 0, ist)
+	postRun := dream.PostRunSchedulingTime(now)
+
+	for i := 0; i < 200; i++ {
+		fire := dream.NextFireTime(postRun)
+		fireIST := fire.In(ist)
+		nowIST := now.In(ist)
+		if fireIST.Year() == nowIST.Year() && fireIST.YearDay() == nowIST.YearDay() {
+			t.Fatalf("NextFireTime returned same-day fire time after PostRunSchedulingTime: %v", fireIST)
+		}
+	}
+}
+
 func TestNextFireTime_IsInOneTo5amISTWindow(t *testing.T) {
 	// Run many samples to ensure randomness always lands in [1:00, 5:00) IST.
 	for i := 0; i < 200; i++ {
