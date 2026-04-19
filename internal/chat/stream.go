@@ -91,7 +91,7 @@ func buildAssistantContent(text string, calls []toolCall) string {
 // result back in the same response — no Go dispatch is needed. scanStream
 // emits a status SSE event when a server_tool_use block completes and does NOT
 // add them to toolCalls.
-func (h *Handler) scanStream(body io.Reader, w io.Writer, canFlush bool, flusher http.Flusher) streamResult {
+func scanStream(body io.Reader, w io.Writer, canFlush bool, flusher http.Flusher) streamResult {
 	var assembled strings.Builder
 	var toolJSONBuf strings.Builder
 	var currentID, currentName string

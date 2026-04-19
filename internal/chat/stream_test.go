@@ -142,9 +142,8 @@ data: {"type":"message_stop"}
 `
 
 func TestScanStream_EmitsWorkingStatusAsFirstEvent(t *testing.T) {
-	h := &Handler{}
 	var buf strings.Builder
-	h.scanStream(strings.NewReader(scanStreamTextOnlySSE), &buf, false, nil)
+	scanStream(strings.NewReader(scanStreamTextOnlySSE), &buf, false, nil)
 
 	out := buf.String()
 	first := strings.SplitN(out, "\n\n", 2)[0]
@@ -157,9 +156,8 @@ func TestScanStream_EmitsWorkingStatusAsFirstEvent(t *testing.T) {
 }
 
 func TestScanStream_SaveToVault_EmitsGenericStatusNotPathSpecific(t *testing.T) {
-	h := &Handler{}
 	var buf strings.Builder
-	h.scanStream(strings.NewReader(scanStreamSaveToVaultSSE), &buf, false, nil)
+	scanStream(strings.NewReader(scanStreamSaveToVaultSSE), &buf, false, nil)
 
 	out := buf.String()
 	// Find the first status event after "Working…"

@@ -66,11 +66,17 @@ type Handler struct {
 	store    store.ChatStore
 	streamer Streamer
 	vault    *vault.Manager
+	runner   *AgenticRunner
 }
 
 // NewHandler returns an http.Handler for POST /api/chat.
 func NewHandler(cs store.ChatStore, streamer Streamer, vm *vault.Manager) http.Handler {
-	h := &Handler{store: cs, streamer: streamer, vault: vm}
+	h := &Handler{
+		store:    cs,
+		streamer: streamer,
+		vault:    vm,
+		runner:   NewAgenticRunner(streamer, cs, vm),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/chat", h.handleChat)
 	return mux
@@ -204,82 +210,7 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	flusher, canFlush := w.(http.Flusher)
-
-	// Agentic loop: continue until the LLM produces a final answer (no tool
-	// calls) or save_to_vault, or we hit the retrieval cap.
-	for retrievalCount := 0; ; {
-		sr := h.scanStream(body, w, canFlush, flusher)
-		body.Close()
-
-		if sr.scanErr != nil {
-			writeSSE(w, "error", fmt.Sprintf(`{"message":%q}`, sr.scanErr.Error()))
-			if canFlush {
-				flusher.Flush()
-			}
-			return
-		}
-
-		// Persist the assistant message (text + all tool_use blocks if any).
-		assistantContent := sr.assembled
-		if len(sr.toolCalls) > 0 {
-			assistantContent = buildAssistantContent(sr.assembled, sr.toolCalls)
-		}
-		_ = h.store.AppendMessage(store.Message{
-			SessionID: session.ID,
-			Role:      "assistant",
-			Content:   assistantContent,
-		})
-
-		// No tool calls → final answer; we're done.
-		if len(sr.toolCalls) == 0 {
-			writeSSE(w, "done", fmt.Sprintf(`{"session_id":%q}`, session.ID))
-			if canFlush {
-				flusher.Flush()
-			}
-			return
-		}
-
-		// Dispatch each tool call and collect results.
-		if h.dispatchToolCalls(w, session.ID, sr.toolCalls, canFlush, flusher) {
-			writeSSE(w, "done", fmt.Sprintf(`{"session_id":%q}`, session.ID))
-			if canFlush {
-				flusher.Flush()
-			}
-			return
-		}
-
-		// Enforce retrieval cap across all tool calls in this turn.
-		retrievalCount += len(sr.toolCalls)
-		if retrievalCount > maxRetrievalCalls {
-			writeSSE(w, "error", `{"message":"exceeded maximum tool call limit"}`)
-			if canFlush {
-				flusher.Flush()
-			}
-			return
-		}
-
-		// Re-fetch history (tool_results just appended) and open the next stream.
-		// PDF attachments are not re-sent on loop iterations 2+ — the LLM
-		// already has the document in context from the first call.
-		history, err = h.store.ListMessages(session.ID)
-		if err != nil {
-			writeSSE(w, "error", `{"message":"store error"}`)
-			if canFlush {
-				flusher.Flush()
-			}
-			return
-		}
-		body, err = h.streamer.Stream(r.Context(), buildSystemPrompt(schemaContent, indexMD), history, nil)
-		if err != nil {
-			slog.Error("LLM stream failed in agentic loop", "error", err, "session_id", session.ID)
-			writeSSE(w, "error", fmt.Sprintf(`{"message":%q}`, err.Error()))
-			if canFlush {
-				flusher.Flush()
-			}
-			return
-		}
-	}
+	_ = h.runner.Run(r.Context(), session.ID, buildSystemPrompt(schemaContent, indexMD), body, w, maxRetrievalCalls)
 }
 
 // isRateLimitError reports whether err is an Anthropic 429 response.

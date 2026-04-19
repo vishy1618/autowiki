@@ -11,24 +11,24 @@ import (
 	"github.com/suvish/autowiki/internal/vault"
 )
 
-// newHandlerForTools constructs a Handler with only the dependencies needed
-// by the tool helpers (no streamer required).
-func newHandlerForTools(t *testing.T) (*Handler, store.ChatStore, *vault.Manager, string) {
+// newRunnerForTools constructs an AgenticRunner with only the dependencies
+// needed by the tool helpers (no streamer required).
+func newRunnerForTools(t *testing.T) (*AgenticRunner, store.ChatStore, *vault.Manager, string) {
 	t.Helper()
 	cs := store.NewMemChatStore()
 	vaultDir := t.TempDir()
 	vm := vault.NewManager(vaultDir)
-	h := &Handler{store: cs, vault: vm}
-	return h, cs, vm, vaultDir
+	r := NewAgenticRunner(nil, cs, vm)
+	return r, cs, vm, vaultDir
 }
 
 // ── storeToolResult ───────────────────────────────────────────────────────────
 
 func TestStoreToolResult_PersistsToolResultRole(t *testing.T) {
-	h, cs, _, _ := newHandlerForTools(t)
+	r, cs, _, _ := newRunnerForTools(t)
 	sess, _ := cs.ResolveSession()
 
-	h.storeToolResult(sess.ID, "tc1", "ok", false)
+	r.storeToolResult(sess.ID, "tc1", "ok", false)
 
 	msgs, _ := cs.ListMessages(sess.ID)
 	var found bool
@@ -43,10 +43,10 @@ func TestStoreToolResult_PersistsToolResultRole(t *testing.T) {
 }
 
 func TestStoreToolResult_JSONContainsToolUseID(t *testing.T) {
-	h, cs, _, _ := newHandlerForTools(t)
+	r, cs, _, _ := newRunnerForTools(t)
 	sess, _ := cs.ResolveSession()
 
-	h.storeToolResult(sess.ID, "toolu_abc", "content", false)
+	r.storeToolResult(sess.ID, "toolu_abc", "content", false)
 
 	msgs, _ := cs.ListMessages(sess.ID)
 	var tr struct {
@@ -63,10 +63,10 @@ func TestStoreToolResult_JSONContainsToolUseID(t *testing.T) {
 }
 
 func TestStoreToolResult_SetsIsErrorTrue(t *testing.T) {
-	h, cs, _, _ := newHandlerForTools(t)
+	r, cs, _, _ := newRunnerForTools(t)
 	sess, _ := cs.ResolveSession()
 
-	h.storeToolResult(sess.ID, "tc1", "something failed", true)
+	r.storeToolResult(sess.ID, "tc1", "something failed", true)
 
 	msgs, _ := cs.ListMessages(sess.ID)
 	var tr struct {
@@ -83,10 +83,10 @@ func TestStoreToolResult_SetsIsErrorTrue(t *testing.T) {
 }
 
 func TestStoreToolResult_SetsIsErrorFalse(t *testing.T) {
-	h, cs, _, _ := newHandlerForTools(t)
+	r, cs, _, _ := newRunnerForTools(t)
 	sess, _ := cs.ResolveSession()
 
-	h.storeToolResult(sess.ID, "tc1", "success", false)
+	r.storeToolResult(sess.ID, "tc1", "success", false)
 
 	msgs, _ := cs.ListMessages(sess.ID)
 	var tr struct {
@@ -105,11 +105,11 @@ func TestStoreToolResult_SetsIsErrorFalse(t *testing.T) {
 // ── applyVaultWrites ──────────────────────────────────────────────────────────
 
 func TestApplyVaultWrites_InvalidJSON_StoresErrorResult(t *testing.T) {
-	h, cs, _, _ := newHandlerForTools(t)
+	r, cs, _, _ := newRunnerForTools(t)
 	sess, _ := cs.ResolveSession()
 
 	var buf strings.Builder
-	h.applyVaultWrites(&buf, sess.ID, "tc1", "not json", false, nil)
+	r.applyVaultWrites(&buf, sess.ID, "tc1", "not json", false, nil)
 
 	msgs, _ := cs.ListMessages(sess.ID)
 	var tr struct {
@@ -126,11 +126,11 @@ func TestApplyVaultWrites_InvalidJSON_StoresErrorResult(t *testing.T) {
 }
 
 func TestApplyVaultWrites_NoPages_StoresErrorResult(t *testing.T) {
-	h, cs, _, _ := newHandlerForTools(t)
+	r, cs, _, _ := newRunnerForTools(t)
 	sess, _ := cs.ResolveSession()
 
 	var buf strings.Builder
-	h.applyVaultWrites(&buf, sess.ID, "tc1", `{"pages":[]}`, false, nil)
+	r.applyVaultWrites(&buf, sess.ID, "tc1", `{"pages":[]}`, false, nil)
 
 	msgs, _ := cs.ListMessages(sess.ID)
 	var tr struct {
@@ -147,12 +147,12 @@ func TestApplyVaultWrites_NoPages_StoresErrorResult(t *testing.T) {
 }
 
 func TestApplyVaultWrites_ValidPages_WritesVaultFile(t *testing.T) {
-	h, cs, _, vaultDir := newHandlerForTools(t)
+	r, cs, _, vaultDir := newRunnerForTools(t)
 	sess, _ := cs.ResolveSession()
 
 	var buf strings.Builder
 	toolJSON := `{"pages":[{"path":"notes/test.md","content":"# Test"}]}`
-	h.applyVaultWrites(&buf, sess.ID, "tc1", toolJSON, false, nil)
+	r.applyVaultWrites(&buf, sess.ID, "tc1", toolJSON, false, nil)
 
 	content, err := os.ReadFile(filepath.Join(vaultDir, "notes/test.md"))
 	if err != nil {
@@ -164,12 +164,12 @@ func TestApplyVaultWrites_ValidPages_WritesVaultFile(t *testing.T) {
 }
 
 func TestApplyVaultWrites_ValidPages_EmitsVaultSSEEvent(t *testing.T) {
-	h, cs, _, _ := newHandlerForTools(t)
+	r, cs, _, _ := newRunnerForTools(t)
 	sess, _ := cs.ResolveSession()
 
 	var buf strings.Builder
 	toolJSON := `{"pages":[{"path":"notes/test.md","content":"# Test"}]}`
-	h.applyVaultWrites(&buf, sess.ID, "tc1", toolJSON, false, nil)
+	r.applyVaultWrites(&buf, sess.ID, "tc1", toolJSON, false, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, "event: vault") {
@@ -181,12 +181,12 @@ func TestApplyVaultWrites_ValidPages_EmitsVaultSSEEvent(t *testing.T) {
 }
 
 func TestApplyVaultWrites_ValidPages_StoresSuccessToolResult(t *testing.T) {
-	h, cs, _, _ := newHandlerForTools(t)
+	r, cs, _, _ := newRunnerForTools(t)
 	sess, _ := cs.ResolveSession()
 
 	var buf strings.Builder
 	toolJSON := `{"pages":[{"path":"notes/test.md","content":"# Test"}]}`
-	h.applyVaultWrites(&buf, sess.ID, "tc1", toolJSON, false, nil)
+	r.applyVaultWrites(&buf, sess.ID, "tc1", toolJSON, false, nil)
 
 	msgs, _ := cs.ListMessages(sess.ID)
 	var tr struct {

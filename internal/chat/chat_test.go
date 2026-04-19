@@ -1508,3 +1508,4 @@ func parseSSE(t *testing.T, body string) []sseEvent {
 	}
 	return events
 }
+
