@@ -88,3 +88,25 @@ func TestConfig_Load_DefaultsBaseURLToLocalhost(t *testing.T) {
 		t.Errorf("expected default BaseURL %q, got %q", "http://localhost:9090", cfg.BaseURL)
 	}
 }
+
+func TestConfig_DriveSync_DefaultsApplied(t *testing.T) {
+	// When drive_sync is absent from config, defaults must be populated so
+	// drivesync.New() can rely on them without nil-checking every field.
+	setMinimalEnv(t)
+	path := writeConfig(t, minimalConfig)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.DriveSync.VaultFolderName != "autowiki-vault" {
+		t.Errorf("VaultFolderName: want %q, got %q", "autowiki-vault", cfg.DriveSync.VaultFolderName)
+	}
+	if cfg.DriveSync.PollIntervalSecs != 60 {
+		t.Errorf("PollIntervalSecs: want 60, got %d", cfg.DriveSync.PollIntervalSecs)
+	}
+	if cfg.DriveSync.ConflictStrategy != "last_write_wins" {
+		t.Errorf("ConflictStrategy: want %q, got %q", "last_write_wins", cfg.DriveSync.ConflictStrategy)
+	}
+}

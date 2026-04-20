@@ -20,28 +20,30 @@ import (
 )
 
 type Server struct {
-	cfg         *config.Config
-	mux         *http.ServeMux
-	dev         bool
-	sessions    store.SessionStore
-	chats       store.ChatStore
-	streamer    chat.Streamer
-	vault       *vault.Manager
-	describer   attachment.Describer
-	consolidate dream.ConsolidateFn
+	cfg             *config.Config
+	mux             *http.ServeMux
+	dev             bool
+	sessions        store.SessionStore
+	chats           store.ChatStore
+	streamer        chat.Streamer
+	vault           *vault.Manager
+	describer       attachment.Describer
+	consolidate     dream.ConsolidateFn
+	driveTokenStore store.DriveTokenStore // nil when drive sync is disabled
 }
 
-func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, streamer chat.Streamer, vm *vault.Manager, describer attachment.Describer, consolidate dream.ConsolidateFn, dev bool) *Server {
+func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, streamer chat.Streamer, vm *vault.Manager, describer attachment.Describer, consolidate dream.ConsolidateFn, driveTokenStore store.DriveTokenStore, dev bool) *Server {
 	s := &Server{
-		cfg:         cfg,
-		mux:         http.NewServeMux(),
-		dev:         dev,
-		sessions:    sessions,
-		chats:       chats,
-		streamer:    streamer,
-		vault:       vm,
-		describer:   describer,
-		consolidate: consolidate,
+		cfg:             cfg,
+		mux:             http.NewServeMux(),
+		dev:             dev,
+		sessions:        sessions,
+		chats:           chats,
+		streamer:        streamer,
+		vault:           vm,
+		describer:       describer,
+		consolidate:     consolidate,
+		driveTokenStore: driveTokenStore,
 	}
 	s.routes()
 	return s
@@ -55,7 +57,7 @@ func (s *Server) routes() {
 		SessionSecret:      s.cfg.Auth.SessionSecret,
 		BaseURL:            s.cfg.BaseURL,
 	}
-	authHandler := auth.NewHandler(authCfg, s.sessions)
+	authHandler := auth.NewHandler(authCfg, s.sessions, s.driveTokenStore)
 	mw := auth.NewMiddleware(s.sessions)
 
 	// Public OAuth endpoints — no auth required.

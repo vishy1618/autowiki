@@ -39,10 +39,64 @@ func newHandler(t *testing.T) *auth.Handler {
 		SessionSecret:      "supersecretvalue",
 		BaseURL:            "http://localhost:8080",
 	}
-	return auth.NewHandler(cfg, store.NewMemStore())
+	return auth.NewHandler(cfg, store.NewMemStore(), nil)
 }
 
 // --- GET /api/auth/login ---
+
+func TestLogin_WithDriveSync_IncludesDriveScopeAndOfflineAccess(t *testing.T) {
+	// Arrange — handler wired with a DriveTokenStore signals drive sync is enabled.
+	cfg := auth.Config{
+		GoogleClientID:     "client-id",
+		GoogleClientSecret: "client-secret",
+		AllowedEmail:       "allowed@example.com",
+		SessionSecret:      "supersecretvalue",
+		BaseURL:            "http://localhost:8080",
+	}
+	h := auth.NewHandler(cfg, store.NewMemStore(), store.NewMemStore())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	// Act
+	h.Login(w, req)
+
+	// Assert
+	loc := w.Result().Header.Get("Location")
+	if !strings.Contains(loc, "drive.file") {
+		t.Errorf("Login URL missing drive.file scope: %q", loc)
+	}
+	if !strings.Contains(loc, "access_type=offline") {
+		t.Errorf("Login URL missing access_type=offline: %q", loc)
+	}
+}
+
+func TestLogin_WithoutDriveSync_OmitsDriveScopeAndOnlineAccess(t *testing.T) {
+	// Arrange — nil DriveTokenStore means drive sync is disabled.
+	cfg := auth.Config{
+		GoogleClientID:     "client-id",
+		GoogleClientSecret: "client-secret",
+		AllowedEmail:       "allowed@example.com",
+		SessionSecret:      "supersecretvalue",
+		BaseURL:            "http://localhost:8080",
+	}
+	h := auth.NewHandler(cfg, store.NewMemStore(), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	// Act
+	h.Login(w, req)
+
+	// Assert
+	loc := w.Result().Header.Get("Location")
+	if strings.Contains(loc, "drive.file") {
+		t.Errorf("Login URL should not contain drive.file scope: %q", loc)
+	}
+	if strings.Contains(loc, "access_type=offline") {
+		t.Errorf("Login URL should not contain access_type=offline: %q", loc)
+	}
+}
 
 func TestLogin_RedirectsToGoogle(t *testing.T) {
 	h := newHandler(t)
@@ -87,7 +141,7 @@ func TestLogout_ClearsSessionAndCookie(t *testing.T) {
 		SessionSecret:      "supersecretvalue",
 		BaseURL:            "http://localhost:8080",
 	}
-	h := auth.NewHandler(cfg, s)
+	h := auth.NewHandler(cfg, s, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
 	req.AddCookie(&http.Cookie{Name: "autowiki_session", Value: "logout-token"})
@@ -177,7 +231,7 @@ func TestMe_WithValidSession_ReturnsEmail(t *testing.T) {
 		SessionSecret: "supersecretvalue",
 		BaseURL:       "http://localhost:8080",
 	}
-	h := auth.NewHandler(cfg, s)
+	h := auth.NewHandler(cfg, s, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
 	req.AddCookie(&http.Cookie{Name: "autowiki_session", Value: "valid-token"})
@@ -219,7 +273,7 @@ func TestCallback_HappyPath_SetsSessionCookieAndRedirects(t *testing.T) {
 		SessionSecret:      "supersecretvalue",
 		BaseURL:            "http://localhost:8080",
 	}
-	h := auth.NewHandler(cfg, s)
+	h := auth.NewHandler(cfg, s, nil)
 	h.WithHTTPClient(fakeGoogleClient(fakeGoogle))
 
 	// Build request with matching state cookie and query param.
@@ -256,6 +310,87 @@ func TestCallback_HappyPath_SetsSessionCookieAndRedirects(t *testing.T) {
 	}
 	if sess.Email != "allowed@example.com" {
 		t.Errorf("session email: want allowed@example.com, got %q", sess.Email)
+	}
+}
+
+func TestCallback_WithDriveSync_StoresRefreshToken(t *testing.T) {
+	// Arrange — fake Google returns both an access token and a refresh token.
+	fakeGoogle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "userinfo") {
+			fmt.Fprint(w, `{"email":"allowed@example.com","verified_email":true}`)
+		} else {
+			fmt.Fprint(w, `{"access_token":"fake-access","refresh_token":"fake-refresh","token_type":"Bearer","expires_in":3600}`)
+		}
+	}))
+	defer fakeGoogle.Close()
+
+	s := store.NewMemStore()
+	cfg := auth.Config{
+		GoogleClientID:     "client-id",
+		GoogleClientSecret: "client-secret",
+		AllowedEmail:       "allowed@example.com",
+		SessionSecret:      "supersecretvalue",
+		BaseURL:            "http://localhost:8080",
+	}
+	h := auth.NewHandler(cfg, s, s)
+	h.WithHTTPClient(fakeGoogleClient(fakeGoogle))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/callback?code=authcode&state=mystate", nil)
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "mystate"})
+	w := httptest.NewRecorder()
+
+	// Act
+	h.Callback(w, req)
+
+	// Assert — refresh token stored in DriveTokenStore.
+	token, err := s.GetDriveToken()
+	if err != nil {
+		t.Fatalf("GetDriveToken: %v", err)
+	}
+	if token != "fake-refresh" {
+		t.Errorf("DriveToken: want %q, got %q", "fake-refresh", token)
+	}
+}
+
+func TestCallback_WithoutDriveSync_DoesNotStoreDriveToken(t *testing.T) {
+	// Arrange — Drive sync disabled (nil DriveTokenStore); callback must not
+	// attempt to store a token even if the token response contains one.
+	fakeGoogle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "userinfo") {
+			fmt.Fprint(w, `{"email":"allowed@example.com","verified_email":true}`)
+		} else {
+			fmt.Fprint(w, `{"access_token":"fake-access","refresh_token":"fake-refresh","token_type":"Bearer","expires_in":3600}`)
+		}
+	}))
+	defer fakeGoogle.Close()
+
+	s := store.NewMemStore()
+	cfg := auth.Config{
+		GoogleClientID:     "client-id",
+		GoogleClientSecret: "client-secret",
+		AllowedEmail:       "allowed@example.com",
+		SessionSecret:      "supersecretvalue",
+		BaseURL:            "http://localhost:8080",
+	}
+	h := auth.NewHandler(cfg, s, nil) // drive sync disabled
+	h.WithHTTPClient(fakeGoogleClient(fakeGoogle))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/callback?code=authcode&state=mystate", nil)
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "mystate"})
+	w := httptest.NewRecorder()
+
+	// Act
+	h.Callback(w, req)
+
+	// Assert — no drive token stored (store always returns empty when not set).
+	token, err := s.GetDriveToken()
+	if err != nil {
+		t.Fatalf("GetDriveToken: %v", err)
+	}
+	if token != "" {
+		t.Errorf("DriveToken: want empty, got %q", token)
 	}
 }
 

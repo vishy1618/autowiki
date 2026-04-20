@@ -18,6 +18,26 @@ func OpenPebble(path string) (*pebble.DB, error) {
 	return db, nil
 }
 
+// ── Drive token store ───────────────────────────────────────────────────────
+
+const driveTokenKey = "drive:refresh_token"
+
+func (p *PebbleStore) GetDriveToken() (string, error) {
+	data, closer, err := p.db.Get([]byte(driveTokenKey))
+	if err == pebble.ErrNotFound {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("pebble get drive token: %w", err)
+	}
+	defer closer.Close()
+	return string(data), nil
+}
+
+func (p *PebbleStore) SetDriveToken(refreshToken string) error {
+	return p.db.Set([]byte(driveTokenKey), []byte(refreshToken), pebble.Sync)
+}
+
 // ── Auth session store ──────────────────────────────────────────────────────
 
 const sessionKeyPrefix = "auth:sessions:"

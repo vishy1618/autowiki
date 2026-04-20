@@ -15,8 +15,9 @@ type Config struct {
 	PebblePath      string      `yaml:"pebble_path"`
 	ChatModel       string      `yaml:"chat_model"`
 	DreamModel      string      `yaml:"dream_model"`
-	Auth            AuthConfig  `yaml:"auth"`
-	Dream           DreamConfig `yaml:"dream"`
+	Auth            AuthConfig      `yaml:"auth"`
+	Dream           DreamConfig     `yaml:"dream"`
+	DriveSync       DriveSyncConfig `yaml:"drive_sync"`
 }
 
 type AuthConfig struct {
@@ -30,6 +31,13 @@ type DreamConfig struct {
 	Enabled      bool `yaml:"enabled"`
 	StartHourUTC int  `yaml:"start_hour_utc"`
 	EndHourUTC   int  `yaml:"end_hour_utc"`
+}
+
+type DriveSyncConfig struct {
+	Enabled          bool   `yaml:"enabled"`
+	VaultFolderName  string `yaml:"vault_folder_name"`
+	PollIntervalSecs int    `yaml:"poll_interval_secs"`
+	ConflictStrategy string `yaml:"conflict_strategy"`
 }
 
 func Load(path string) (*Config, error) {
@@ -74,6 +82,15 @@ func (c *Config) validate() error {
 	}
 	if c.Dream.EndHourUTC == 0 {
 		c.Dream.EndHourUTC = 23
+	}
+	if c.DriveSync.VaultFolderName == "" {
+		c.DriveSync.VaultFolderName = "autowiki-vault"
+	}
+	if c.DriveSync.PollIntervalSecs == 0 {
+		c.DriveSync.PollIntervalSecs = 60
+	}
+	if c.DriveSync.ConflictStrategy == "" {
+		c.DriveSync.ConflictStrategy = "last_write_wins"
 	}
 	if c.VaultPath == "" {
 		return fmt.Errorf("VAULT_PATH is required")

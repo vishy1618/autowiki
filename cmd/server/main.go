@@ -68,7 +68,12 @@ func main() {
 	dreamer := dream.NewRunner(vm, consolidateFn, cfg.Dream.StartHourUTC, cfg.Dream.EndHourUTC)
 	go dreamer.Start(dreamCtx)
 
-	srv := server.New(cfg, sessions, chats, haikuClient, vm, haikuClient, consolidateFn, *dev)
+	var driveTokenStore store.DriveTokenStore
+	if cfg.DriveSync.Enabled {
+		driveTokenStore = sessions
+	}
+
+	srv := server.New(cfg, sessions, chats, haikuClient, vm, haikuClient, consolidateFn, driveTokenStore, *dev)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

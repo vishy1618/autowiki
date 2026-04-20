@@ -14,3 +14,8 @@ dream:
   enabled: true
   start_hour_utc: 19
   end_hour_utc: 23
+drive_sync:
+  enabled: true
+  # vault_folder_name: autowiki-vault
+  # poll_interval_secs: 60
+  # conflict_strategy: last_write_wins

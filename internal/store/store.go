@@ -51,6 +51,14 @@ type ChatStore interface {
 	SearchMessages(query string, sessionOffset, sessionLimit int) ([]MessageSearchResult, error)
 }
 
+// DriveTokenStore persists the Google OAuth refresh token used for Drive sync.
+type DriveTokenStore interface {
+	// GetDriveToken returns the stored refresh token, or "" if none is set.
+	GetDriveToken() (string, error)
+	// SetDriveToken stores the refresh token, replacing any previous value.
+	SetDriveToken(refreshToken string) error
+}
+
 // Session holds an authenticated user session.
 type Session struct {
 	Token             string    `json:"token"`

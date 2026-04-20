@@ -5,10 +5,11 @@ import (
 	"time"
 )
 
-// MemStore is an in-memory SessionStore. Intended for tests.
+// MemStore is an in-memory SessionStore and DriveTokenStore. Intended for tests.
 type MemStore struct {
-	mu       sync.RWMutex
-	sessions map[string]Session
+	mu         sync.RWMutex
+	sessions   map[string]Session
+	driveToken string
 }
 
 func NewMemStore() *MemStore {
@@ -43,6 +44,19 @@ func (m *MemStore) DeleteSession(token string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.sessions, token)
+	return nil
+}
+
+func (m *MemStore) GetDriveToken() (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.driveToken, nil
+}
+
+func (m *MemStore) SetDriveToken(refreshToken string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.driveToken = refreshToken
 	return nil
 }
 

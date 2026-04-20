@@ -15,6 +15,8 @@ import (
 	"github.com/suvish/autowiki/internal/store"
 )
 
+const driveFileScope = "https://www.googleapis.com/auth/drive.file"
+
 const (
 	sessionCookieName   = "autowiki_session"
 	sessionDuration     = 24 * time.Hour
@@ -33,26 +35,34 @@ type Config struct {
 
 // Handler implements the Google OAuth flow.
 type Handler struct {
-	cfg        Config
-	oauthCfg   *oauth2.Config
-	sessions   store.SessionStore
-	httpClient *http.Client
+	cfg             Config
+	oauthCfg        *oauth2.Config
+	sessions        store.SessionStore
+	driveTokenStore store.DriveTokenStore // nil when drive sync is disabled
+	httpClient      *http.Client
 }
 
-// NewHandler constructs an auth Handler.
-func NewHandler(cfg Config, sessions store.SessionStore) *Handler {
+// NewHandler constructs an auth Handler. Pass a non-nil driveTokenStore to
+// enable Drive sync: the OAuth flow will request the drive.file scope with
+// offline access and store the refresh token after a successful callback.
+func NewHandler(cfg Config, sessions store.SessionStore, driveTokenStore store.DriveTokenStore) *Handler {
+	scopes := []string{"openid", "email"}
+	if driveTokenStore != nil {
+		scopes = append(scopes, driveFileScope)
+	}
 	oauthCfg := &oauth2.Config{
 		ClientID:     cfg.GoogleClientID,
 		ClientSecret: cfg.GoogleClientSecret,
 		RedirectURL:  cfg.BaseURL + "/api/auth/callback",
-		Scopes:       []string{"openid", "email"},
+		Scopes:       scopes,
 		Endpoint:     google.Endpoint,
 	}
 	return &Handler{
-		cfg:        cfg,
-		oauthCfg:   oauthCfg,
-		sessions:   sessions,
-		httpClient: http.DefaultClient,
+		cfg:             cfg,
+		oauthCfg:        oauthCfg,
+		sessions:        sessions,
+		driveTokenStore: driveTokenStore,
+		httpClient:      http.DefaultClient,
 	}
 }
 
@@ -116,7 +126,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	url := h.oauthCfg.AuthCodeURL(state, oauth2.AccessTypeOnline)
+	accessType := oauth2.AccessTypeOnline
+	if h.driveTokenStore != nil {
+		accessType = oauth2.AccessTypeOffline
+	}
+	url := h.oauthCfg.AuthCodeURL(state, accessType)
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
@@ -173,6 +187,13 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 	if err := h.sessions.CreateSession(sess); err != nil {
 		http.Error(w, "failed to store session", http.StatusInternalServerError)
 		return
+	}
+
+	if h.driveTokenStore != nil && token.RefreshToken != "" {
+		if err := h.driveTokenStore.SetDriveToken(token.RefreshToken); err != nil {
+			http.Error(w, "failed to store drive token", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	http.SetCookie(w, &http.Cookie{
