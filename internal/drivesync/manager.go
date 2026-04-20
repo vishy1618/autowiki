@@ -28,16 +28,19 @@ type uploadJob struct {
 
 // SyncManager orchestrates vault→Drive upload. Constructed via New().
 type SyncManager struct {
-	cfg         config.DriveSyncConfig
-	oauthCfg    *oauth2.Config
-	tokenStore  store.DriveTokenStore
-	driveClient *DriveClient // nil until Start() builds it (or NewWithHTTPClient sets it)
-	state       *State
-	vaultPath   string
-	uploadCh    chan uploadJob
-	wg          sync.WaitGroup
-	workerOnce  sync.Once
-	shutdownOnce sync.Once
+	cfg             config.DriveSyncConfig
+	oauthCfg        *oauth2.Config
+	tokenStore      store.DriveTokenStore
+	driveClient     *DriveClient // nil until Start() builds it (or NewWithHTTPClient sets it)
+	state           *State
+	vaultPath       string
+	uploadCh        chan uploadJob
+	wg              sync.WaitGroup
+	workerOnce      sync.Once
+	shutdownOnce    sync.Once
+	watcher         *Watcher
+	watcherDone     chan struct{}
+	watcherDebounce time.Duration // 0 → use default (2s)
 }
 
 // New returns a SyncManager ready to Start. The DriveClient is built lazily
@@ -127,6 +130,25 @@ func (sm *SyncManager) Start(ctx context.Context) {
 	slog.Info("drive sync: start page token stored", "token", pageToken)
 
 	sm.reconcileUpload(ctx)
+
+	debounce := sm.watcherDebounce
+	if debounce == 0 {
+		debounce = 2 * time.Second
+	}
+	w, err := newWatcherWithDebounce(sm.vaultPath, debounce)
+	if err != nil {
+		slog.Error("drive sync: starting watcher", "err", err)
+		return
+	}
+	sm.watcher = w
+	sm.watcherDone = make(chan struct{})
+
+	go func() {
+		defer close(sm.watcherDone)
+		for event := range w.Events() {
+			sm.handleFileEvent(event)
+		}
+	}()
 }
 
 // ReconcileUpload walks the vault and uploads any files not yet tracked in State.
@@ -148,6 +170,7 @@ func (sm *SyncManager) reconcileUpload(ctx context.Context) {
 		return
 	}
 
+	slog.Info("drive sync: reconcile started")
 	err = filepath.WalkDir(sm.vaultPath, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -179,8 +202,10 @@ func (sm *SyncManager) reconcileUpload(ctx context.Context) {
 			}
 		}
 
+		relPathSlash := filepath.ToSlash(relPath)
+		slog.Info("drive sync: queuing reconcile upload", "path", relPathSlash)
 		sm.uploadCh <- uploadJob{
-			relPath:   filepath.ToSlash(relPath),
+			relPath:   relPathSlash,
 			localPath: path,
 			parentID:  parentID,
 		}
@@ -191,11 +216,51 @@ func (sm *SyncManager) reconcileUpload(ctx context.Context) {
 	}
 }
 
-// Shutdown closes the upload channel and waits for the worker to drain.
+// Shutdown stops the watcher (if running), drains the upload worker, and returns.
 // Safe to call multiple times.
 func (sm *SyncManager) Shutdown() {
+	if sm.watcher != nil {
+		sm.watcher.Close()
+		<-sm.watcherDone
+	}
 	sm.shutdownOnce.Do(func() { close(sm.uploadCh) })
 	sm.wg.Wait()
+}
+
+func (sm *SyncManager) handleFileEvent(event FileEvent) {
+	slog.Info("drive sync: watcher event", "path", event.RelPath, "op", event.Op)
+
+	if event.Op == OpRemove || event.Op == OpRename {
+		existing, err := sm.state.GetFile(event.RelPath)
+		if err != nil || existing == nil {
+			return // not tracked — nothing to trash
+		}
+		sm.uploadCh <- uploadJob{isTrash: true, relPath: event.RelPath, driveID: existing.DriveID}
+		return
+	}
+
+	vaultFolderID, err := sm.state.GetRootFolderID()
+	if err != nil {
+		slog.Error("drive sync: reading vault folder ID for watcher event", "err", err)
+		return
+	}
+
+	localPath := filepath.Join(sm.vaultPath, filepath.FromSlash(event.RelPath))
+	dir := filepath.Dir(event.RelPath)
+	parentID := vaultFolderID
+	if dir != "." && vaultFolderID != "" {
+		parentID, err = sm.driveClient.EnsureFolderPath(dir, vaultFolderID, sm.state)
+		if err != nil {
+			slog.Error("drive sync: ensuring folder path for watcher event", "path", dir, "err", err)
+			return
+		}
+	}
+
+	sm.uploadCh <- uploadJob{
+		relPath:   event.RelPath,
+		localPath: localPath,
+		parentID:  parentID,
+	}
 }
 
 func (sm *SyncManager) startWorkerOnce() {
@@ -220,6 +285,7 @@ func (sm *SyncManager) processJob(job uploadJob) {
 		if err := sm.state.DeleteFile(job.relPath); err != nil {
 			slog.Error("drive sync: removing file state", "path", job.relPath, "err", err)
 		}
+		slog.Info("drive sync: file trashed", "path", job.relPath, "driveID", job.driveID)
 		return
 	}
 
@@ -235,6 +301,7 @@ func (sm *SyncManager) processJob(job uploadJob) {
 	}
 	_ = sm.state.SetLastVaultSync(time.Now().UTC().Format(time.RFC3339))
 	_ = sm.state.SetLastError("")
+	slog.Info("drive sync: file uploaded", "path", job.relPath, "driveID", driveID)
 }
 
 func (sm *SyncManager) buildHTTPClient(ctx context.Context, refreshToken string) *http.Client {

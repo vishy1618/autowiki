@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/suvish/autowiki/internal/config"
 	"github.com/suvish/autowiki/internal/drivesync"
@@ -224,6 +225,101 @@ func TestSyncManager_UploadWorker_SetsLastErrorOnFailure(t *testing.T) {
 	}
 	if lastErr == "" {
 		t.Error("expected SetLastError to be called on trash failure")
+	}
+}
+
+func TestSyncManager_WatcherConsumer_TracksNewFileCreatedAfterStart(t *testing.T) {
+	// Arrange — empty vault; fake Drive handles folder creation, page token, and upload.
+	vaultDir := t.TempDir()
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				jsonResponse(w, map[string]any{"files": []any{}})
+				return
+			}
+			jsonResponse(w, map[string]any{"id": "folder-or-file-id"})
+		},
+		"/upload/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			jsonResponse(w, map[string]any{"id": "new-drive-id"})
+		},
+		"/drive/v3/changes/startPageToken": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, map[string]any{"startPageToken": "tok-1"})
+		},
+	})
+	defer srv.Close()
+
+	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
+	drivesync.SetWatcherDebounce(sm, 50*time.Millisecond)
+	sm.Start(context.Background()) // reconcile runs (empty vault), watcher starts
+
+	// Act — create a new file after Start returns.
+	if err := os.WriteFile(filepath.Join(vaultDir, "new.md"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("creating file: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond) // debounce + processing
+	sm.Shutdown()
+
+	// Assert — new.md is tracked in state.
+	entry, err := st.GetFile("new.md")
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected new.md to be tracked in state after watcher upload")
+	}
+	if entry.DriveID == "" {
+		t.Error("expected non-empty DriveID for new.md")
+	}
+}
+
+func TestSyncManager_WatcherConsumer_TrashesDeletedFile(t *testing.T) {
+	// Arrange — vault has a file that's already tracked in state.
+	vaultDir := t.TempDir()
+	filePath := filepath.Join(vaultDir, "old.md")
+	if err := os.WriteFile(filePath, []byte("bye"), 0644); err != nil {
+		t.Fatalf("creating file: %v", err)
+	}
+
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+	_ = st.SetFile("old.md", drivesync.FileEntry{DriveID: "old-drive-id"})
+
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				jsonResponse(w, map[string]any{"files": []any{}})
+				return
+			}
+			// POST (create folder) or PATCH (trash)
+			jsonResponse(w, map[string]any{"id": "old-drive-id"})
+		},
+		"/drive/v3/changes/startPageToken": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, map[string]any{"startPageToken": "tok-1"})
+		},
+	})
+	defer srv.Close()
+
+	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
+	drivesync.SetWatcherDebounce(sm, 50*time.Millisecond)
+	sm.Start(context.Background()) // reconcile skips old.md (already in state)
+
+	// Act — delete the file.
+	if err := os.Remove(filePath); err != nil {
+		t.Fatalf("removing file: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond) // debounce + processing
+	sm.Shutdown()
+
+	// Assert — old.md removed from state.
+	entry, err := st.GetFile("old.md")
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if entry != nil {
+		t.Errorf("expected old.md to be removed from state, got %+v", entry)
 	}
 }
 
