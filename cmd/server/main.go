@@ -77,7 +77,7 @@ func main() {
 	if cfg.DriveSync.Enabled {
 		syncCtx, syncCancel := context.WithCancel(context.Background())
 		defer syncCancel()
-		sm := drivesync.New(cfg.DriveSync, cfg.Auth.GoogleClientID, cfg.Auth.GoogleClientSecret, sessions)
+		sm := drivesync.New(cfg.DriveSync, cfg.Auth.GoogleClientID, cfg.Auth.GoogleClientSecret, db, cfg.VaultPath, sessions)
 		go sm.Start(syncCtx)
 	}
 

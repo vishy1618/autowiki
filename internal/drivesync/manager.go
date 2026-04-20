@@ -2,88 +2,239 @@ package drivesync
 
 import (
 	"context"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"sync"
+	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/drive/v3"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/suvish/autowiki/internal/config"
 	"github.com/suvish/autowiki/internal/store"
 )
 
-// SyncManager orchestrates vault→Drive upload. Constructed via New().
-type SyncManager struct {
-	cfg            config.DriveSyncConfig
-	oauthCfg       *oauth2.Config
-	tokenStore     store.DriveTokenStore
-	overrideClient *http.Client // non-nil in tests to bypass OAuth
+type uploadJob struct {
+	relPath   string
+	localPath string
+	parentID  string
+	isTrash   bool
+	driveID   string // set for trash jobs
 }
 
-// New returns a SyncManager ready to Start. clientID and clientSecret are the
-// same Google credentials used for sign-in.
-func New(cfg config.DriveSyncConfig, clientID, clientSecret string, tokenStore store.DriveTokenStore) *SyncManager {
+// SyncManager orchestrates vault→Drive upload. Constructed via New().
+type SyncManager struct {
+	cfg         config.DriveSyncConfig
+	oauthCfg    *oauth2.Config
+	tokenStore  store.DriveTokenStore
+	driveClient *DriveClient // nil until Start() builds it (or NewWithHTTPClient sets it)
+	state       *State
+	vaultPath   string
+	uploadCh    chan uploadJob
+	wg          sync.WaitGroup
+	workerOnce  sync.Once
+	shutdownOnce sync.Once
+}
+
+// New returns a SyncManager ready to Start. The DriveClient is built lazily
+// inside Start() once the refresh token is confirmed present.
+func New(cfg config.DriveSyncConfig, clientID, clientSecret string, db *pebble.DB, vaultPath string, tokenStore store.DriveTokenStore) *SyncManager {
 	oauthCfg := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Endpoint:     google.Endpoint,
 		Scopes:       []string{drive.DriveFileScope},
 	}
-	return &SyncManager{cfg: cfg, oauthCfg: oauthCfg, tokenStore: tokenStore}
+	return &SyncManager{
+		cfg:        cfg,
+		oauthCfg:   oauthCfg,
+		tokenStore: tokenStore,
+		state:      NewState(db),
+		vaultPath:  vaultPath,
+		uploadCh:   make(chan uploadJob, 200),
+	}
 }
 
-// NewWithHTTPClient constructs a SyncManager that uses the given HTTP client
-// instead of building one from the stored refresh token. Intended for tests.
-func NewWithHTTPClient(cfg config.DriveSyncConfig, tokenStore store.DriveTokenStore, httpClient *http.Client) *SyncManager {
-	return &SyncManager{cfg: cfg, tokenStore: tokenStore, overrideClient: httpClient}
+// NewWithHTTPClient constructs a SyncManager with a pre-built HTTP client,
+// bypassing OAuth. The DriveClient is constructed immediately. Intended for tests.
+func NewWithHTTPClient(cfg config.DriveSyncConfig, db *pebble.DB, vaultPath string, httpClient *http.Client) *SyncManager {
+	dc, _ := NewDriveClient(context.Background(), httpClient)
+	return &SyncManager{
+		cfg:         cfg,
+		driveClient: dc,
+		state:       NewState(db),
+		vaultPath:   vaultPath,
+		uploadCh:    make(chan uploadJob, 200),
+	}
 }
 
-// Start checks for a stored refresh token; if absent it logs and returns.
-// Otherwise it creates the vault Drive folder and fetches the start page token.
-// Errors are logged but never propagated — sync failure must not affect chat.
+// Start checks for a stored refresh token if no DriveClient is set yet; if
+// absent it logs and returns. Otherwise it creates the vault Drive folder,
+// stores sync metadata, runs initial reconciliation, and launches the upload worker.
 func (sm *SyncManager) Start(ctx context.Context) {
-	refreshToken, err := sm.tokenStore.GetDriveToken()
-	if err != nil {
-		slog.Error("drive sync: reading refresh token", "err", err)
-		return
-	}
-	if refreshToken == "" {
-		slog.Warn("drive sync: no refresh token — sign out and back in to grant Drive access")
-		return
-	}
-
-	httpClient := sm.overrideClient
-	if httpClient == nil {
-		httpClient = sm.buildHTTPClient(ctx, refreshToken)
-	}
-
-	driveClient, err := NewDriveClient(ctx, httpClient)
-	if err != nil {
-		slog.Error("drive sync: creating drive client", "err", err)
-		return
+	if sm.driveClient == nil {
+		refreshToken, err := sm.tokenStore.GetDriveToken()
+		if err != nil {
+			slog.Error("drive sync: reading refresh token", "err", err)
+			return
+		}
+		if refreshToken == "" {
+			slog.Warn("drive sync: no refresh token — sign out and back in to grant Drive access")
+			return
+		}
+		httpClient := sm.buildHTTPClient(ctx, refreshToken)
+		sm.driveClient, err = NewDriveClient(ctx, httpClient)
+		if err != nil {
+			slog.Error("drive sync: creating drive client", "err", err)
+			return
+		}
 	}
 
-	rootID, err := driveClient.EnsureFolder(sm.cfg.RootFolderName, "")
+	sm.startWorkerOnce()
+
+	rootID, err := sm.driveClient.EnsureFolder(sm.cfg.RootFolderName, "")
 	if err != nil {
 		slog.Error("drive sync: ensuring root folder", "err", err)
 		return
 	}
 	slog.Info("drive sync: root folder ready", "folderID", rootID)
 
-	vaultID, err := driveClient.EnsureFolder(sm.cfg.VaultFolderName, rootID)
+	vaultID, err := sm.driveClient.EnsureFolder(sm.cfg.VaultFolderName, rootID)
 	if err != nil {
 		slog.Error("drive sync: ensuring vault folder", "err", err)
 		return
 	}
 	slog.Info("drive sync: vault folder ready", "folderID", vaultID)
 
-	pageToken, err := driveClient.GetStartPageToken()
+	if err := sm.state.SetRootFolderID(vaultID); err != nil {
+		slog.Error("drive sync: storing vault folder ID", "err", err)
+		return
+	}
+
+	pageToken, err := sm.driveClient.GetStartPageToken()
 	if err != nil {
 		slog.Error("drive sync: getting start page token", "err", err)
 		return
 	}
-	slog.Info("drive sync: start page token", "token", pageToken)
+	if err := sm.state.SetPageToken(pageToken); err != nil {
+		slog.Error("drive sync: storing page token", "err", err)
+		return
+	}
+	slog.Info("drive sync: start page token stored", "token", pageToken)
+
+	sm.reconcileUpload(ctx)
+}
+
+// ReconcileUpload walks the vault and uploads any files not yet tracked in State.
+// It is a no-op if the DriveClient is not connected. Idempotent: safe to call again
+// after a partial failure.
+func (sm *SyncManager) ReconcileUpload(ctx context.Context) {
+	if sm.driveClient == nil {
+		slog.Warn("drive sync: not connected, skipping reconcile")
+		return
+	}
+	sm.startWorkerOnce()
+	sm.reconcileUpload(ctx)
+}
+
+func (sm *SyncManager) reconcileUpload(ctx context.Context) {
+	vaultFolderID, err := sm.state.GetRootFolderID()
+	if err != nil {
+		slog.Error("drive sync: reading vault folder ID", "err", err)
+		return
+	}
+
+	err = filepath.WalkDir(sm.vaultPath, func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(sm.vaultPath, path)
+		if err != nil {
+			return nil
+		}
+
+		existing, err := sm.state.GetFile(relPath)
+		if err != nil || existing != nil {
+			return nil // skip files already tracked or unreadable
+		}
+
+		dir := filepath.Dir(relPath)
+		parentID := vaultFolderID
+		if dir != "." && vaultFolderID != "" {
+			parentID, err = sm.driveClient.EnsureFolderPath(filepath.ToSlash(dir), vaultFolderID, sm.state)
+			if err != nil {
+				slog.Error("drive sync: ensuring folder path", "path", dir, "err", err)
+				return nil
+			}
+		}
+
+		sm.uploadCh <- uploadJob{
+			relPath:   filepath.ToSlash(relPath),
+			localPath: path,
+			parentID:  parentID,
+		}
+		return nil
+	})
+	if err != nil {
+		slog.Error("drive sync: walking vault", "err", err)
+	}
+}
+
+// Shutdown closes the upload channel and waits for the worker to drain.
+// Safe to call multiple times.
+func (sm *SyncManager) Shutdown() {
+	sm.shutdownOnce.Do(func() { close(sm.uploadCh) })
+	sm.wg.Wait()
+}
+
+func (sm *SyncManager) startWorkerOnce() {
+	sm.workerOnce.Do(func() {
+		sm.wg.Add(1)
+		go func() {
+			defer sm.wg.Done()
+			for job := range sm.uploadCh {
+				sm.processJob(job)
+			}
+		}()
+	})
+}
+
+func (sm *SyncManager) processJob(job uploadJob) {
+	if job.isTrash {
+		if err := sm.driveClient.Trash(job.driveID); err != nil {
+			slog.Error("drive sync: trashing file", "driveID", job.driveID, "err", err)
+			_ = sm.state.SetLastError(err.Error())
+			return
+		}
+		if err := sm.state.DeleteFile(job.relPath); err != nil {
+			slog.Error("drive sync: removing file state", "path", job.relPath, "err", err)
+		}
+		return
+	}
+
+	driveID, err := sm.driveClient.Upload(job.relPath, job.localPath, job.parentID)
+	if err != nil {
+		slog.Error("drive sync: uploading file", "path", job.relPath, "err", err)
+		_ = sm.state.SetLastError(err.Error())
+		return
+	}
+	entry := FileEntry{DriveID: driveID, LocalModTime: time.Now().UTC().Format(time.RFC3339)}
+	if err := sm.state.SetFile(job.relPath, entry); err != nil {
+		slog.Error("drive sync: storing file state", "path", job.relPath, "err", err)
+	}
+	_ = sm.state.SetLastVaultSync(time.Now().UTC().Format(time.RFC3339))
+	_ = sm.state.SetLastError("")
 }
 
 func (sm *SyncManager) buildHTTPClient(ctx context.Context, refreshToken string) *http.Client {
