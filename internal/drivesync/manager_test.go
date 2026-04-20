@@ -323,6 +323,41 @@ func TestSyncManager_WatcherConsumer_TrashesDeletedFile(t *testing.T) {
 	}
 }
 
+func TestSyncManager_Start_PreservesExistingPageToken(t *testing.T) {
+	// Arrange — state already has a page token from a previous run.
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+	_ = st.SetPageToken("existing-token")
+
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				jsonResponse(w, map[string]any{"files": []any{}})
+				return
+			}
+			jsonResponse(w, map[string]any{"id": "folder-id"})
+		},
+		"/drive/v3/changes/startPageToken": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, map[string]any{"startPageToken": "fresh-token"})
+		},
+	})
+	defer srv.Close()
+
+	sm := drivesync.NewWithHTTPClient(testCfg, db, t.TempDir(), httpClient)
+	drivesync.SetWatcherDebounce(sm, 20*time.Millisecond)
+	sm.Start(context.Background())
+	sm.Shutdown()
+
+	// Assert — existing token is preserved; the fresh one from Drive is ignored.
+	tok, err := st.GetPageToken()
+	if err != nil {
+		t.Fatalf("GetPageToken: %v", err)
+	}
+	if tok != "existing-token" {
+		t.Errorf("want existing-token, got %q", tok)
+	}
+}
+
 func TestSyncManager_ReconcileUpload_SkipsFilesAlreadyInState(t *testing.T) {
 	// Arrange — vault has one file and it's already in state.
 	vaultDir := t.TempDir()

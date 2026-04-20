@@ -18,3 +18,9 @@ func NewWatcherForTest(root string, debounce time.Duration) (*Watcher, error) {
 func SetWatcherDebounce(sm *SyncManager, d time.Duration) {
 	sm.watcherDebounce = d
 }
+
+// TriggerNewDirForTest calls handleNewDir directly, bypassing fsnotify.
+// Use to test synthetic-event logic with a fully populated directory.
+func TriggerNewDirForTest(w *Watcher, dirPath string) {
+	w.handleNewDir(dirPath)
+}

@@ -41,6 +41,7 @@ type SyncManager struct {
 	watcher         *Watcher
 	watcherDone     chan struct{}
 	watcherDebounce time.Duration // 0 → use default (2s)
+	vaultFolderID   string        // cached after Start(); never changes during process lifetime
 }
 
 // New returns a SyncManager ready to Start. The DriveClient is built lazily
@@ -65,7 +66,10 @@ func New(cfg config.DriveSyncConfig, clientID, clientSecret string, db *pebble.D
 // NewWithHTTPClient constructs a SyncManager with a pre-built HTTP client,
 // bypassing OAuth. The DriveClient is constructed immediately. Intended for tests.
 func NewWithHTTPClient(cfg config.DriveSyncConfig, db *pebble.DB, vaultPath string, httpClient *http.Client) *SyncManager {
-	dc, _ := NewDriveClient(context.Background(), httpClient)
+	dc, err := NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		panic("drivesync.NewWithHTTPClient: " + err.Error())
+	}
 	return &SyncManager{
 		cfg:         cfg,
 		driveClient: dc,
@@ -117,17 +121,25 @@ func (sm *SyncManager) Start(ctx context.Context) {
 		slog.Error("drive sync: storing vault folder ID", "err", err)
 		return
 	}
+	sm.vaultFolderID = vaultID
 
-	pageToken, err := sm.driveClient.GetStartPageToken()
+	existingToken, err := sm.state.GetPageToken()
 	if err != nil {
-		slog.Error("drive sync: getting start page token", "err", err)
+		slog.Error("drive sync: reading stored page token", "err", err)
 		return
 	}
-	if err := sm.state.SetPageToken(pageToken); err != nil {
-		slog.Error("drive sync: storing page token", "err", err)
-		return
+	if existingToken == "" {
+		pageToken, err := sm.driveClient.GetStartPageToken()
+		if err != nil {
+			slog.Error("drive sync: getting start page token", "err", err)
+			return
+		}
+		if err := sm.state.SetPageToken(pageToken); err != nil {
+			slog.Error("drive sync: storing page token", "err", err)
+			return
+		}
+		slog.Info("drive sync: start page token stored", "token", pageToken)
 	}
-	slog.Info("drive sync: start page token stored", "token", pageToken)
 
 	sm.reconcileUpload(ctx)
 
@@ -164,14 +176,18 @@ func (sm *SyncManager) ReconcileUpload(ctx context.Context) {
 }
 
 func (sm *SyncManager) reconcileUpload(ctx context.Context) {
-	vaultFolderID, err := sm.state.GetRootFolderID()
-	if err != nil {
-		slog.Error("drive sync: reading vault folder ID", "err", err)
-		return
+	vaultFolderID := sm.vaultFolderID
+	if vaultFolderID == "" {
+		var err error
+		vaultFolderID, err = sm.state.GetRootFolderID()
+		if err != nil {
+			slog.Error("drive sync: reading vault folder ID", "err", err)
+			return
+		}
 	}
 
 	slog.Info("drive sync: reconcile started")
-	err = filepath.WalkDir(sm.vaultPath, func(path string, d fs.DirEntry, werr error) error {
+	err := filepath.WalkDir(sm.vaultPath, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
@@ -214,6 +230,7 @@ func (sm *SyncManager) reconcileUpload(ctx context.Context) {
 	if err != nil {
 		slog.Error("drive sync: walking vault", "err", err)
 	}
+	slog.Info("drive sync: reconcile complete")
 }
 
 // Shutdown stops the watcher (if running), drains the upload worker, and returns.
@@ -239,16 +256,12 @@ func (sm *SyncManager) handleFileEvent(event FileEvent) {
 		return
 	}
 
-	vaultFolderID, err := sm.state.GetRootFolderID()
-	if err != nil {
-		slog.Error("drive sync: reading vault folder ID for watcher event", "err", err)
-		return
-	}
-
 	localPath := filepath.Join(sm.vaultPath, filepath.FromSlash(event.RelPath))
+	vaultFolderID := sm.vaultFolderID
 	dir := filepath.Dir(event.RelPath)
 	parentID := vaultFolderID
 	if dir != "." && vaultFolderID != "" {
+		var err error
 		parentID, err = sm.driveClient.EnsureFolderPath(dir, vaultFolderID, sm.state)
 		if err != nil {
 			slog.Error("drive sync: ensuring folder path for watcher event", "path", dir, "err", err)

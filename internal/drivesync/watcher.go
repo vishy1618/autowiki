@@ -160,22 +160,25 @@ func (w *Watcher) handleNewDir(dirPath string) {
 	}
 
 	// Scan for files already present and emit synthetic Create events.
-	entries, err := os.ReadDir(dirPath)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		fullPath := filepath.Join(dirPath, entry.Name())
-		relPath, err := filepath.Rel(w.root, fullPath)
+	// Runs in a goroutine so that sending to w.synthetic never blocks the run() loop,
+	// regardless of how many files the directory contains.
+	go func() {
+		entries, err := os.ReadDir(dirPath)
 		if err != nil {
-			continue
+			return
 		}
-		relPath = filepath.ToSlash(relPath)
-		w.synthetic <- FileEvent{RelPath: relPath, Op: OpCreate}
-	}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			fullPath := filepath.Join(dirPath, entry.Name())
+			relPath, err := filepath.Rel(w.root, fullPath)
+			if err != nil {
+				continue
+			}
+			w.synthetic <- FileEvent{RelPath: filepath.ToSlash(relPath), Op: OpCreate}
+		}
+	}()
 }
 
 func mapOp(op fsnotify.Op) FileOp {
