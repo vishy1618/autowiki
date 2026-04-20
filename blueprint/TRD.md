@@ -12,7 +12,9 @@ Browser (Remix SPA)
      Claude Sonnet (Anthropic API)
            ↕
      Obsidian Vault (markdown files on disk)
-     Pebble (chat history)
+     Pebble (chat history + sync state)
+           ↕  (optional, when drive_sync.enabled)
+     Google Drive (vault mirror + Pebble backup)
 ```
 
 The Go server is the single process. It serves the frontend, handles all API calls, manages vault reads/writes, and runs the dream state goroutine.
@@ -31,6 +33,8 @@ The Go server is the single process. It serves the frontend, handles all API cal
 | Chat history | Pebble (`cockroachdb/pebble` Go bindings) |
 | Wiki storage | Markdown files (Obsidian vault on local disk) |
 | Streaming | Server-Sent Events (SSE) |
+| Cloud sync (optional) | Google Drive API v3 (`google.golang.org/api/drive/v3`) |
+| Local file watching | `fsnotify` |
 | Build | Makefile |
 
 ---
@@ -47,7 +51,8 @@ autowiki/
 │   ├── vault/         # Read/write markdown, wikilinks, attachments, index/log
 │   ├── llm/           # Claude API client, prompt templates
 │   ├── store/         # Pebble — chat sessions, message history, auth sessions
-│   └── dream/         # Background goroutine, nightly scheduler (configurable UTC window)
+│   ├── dream/         # Background goroutine, nightly scheduler (configurable UTC window)
+│   └── drivesync/     # Google Drive sync — vault watcher, polling, Pebble backup
 ├── web/               # Remix app source
 │   └── app/
 ├── public/            # Built Remix output — served by Go
@@ -76,6 +81,7 @@ autowiki/
 - On success, a signed HTTP-only session cookie is issued. The session token is stored in Pebble with an expiry.
 - An auth middleware wraps all `/api/*` routes (except the OAuth endpoints themselves). Unauthenticated requests to `/api/*` return 401. Unauthenticated requests to any other route are redirected to the sign-in page.
 - The Remix frontend has a single `/login` route that renders the "Sign in with Google" button. All other routes require a valid session.
+- **Drive scope**: When `drive_sync.enabled: true` in config, the OAuth flow additionally requests the `https://www.googleapis.com/auth/drive.file` scope and switches to `oauth2.AccessTypeOffline` so that a refresh token is issued. This scope grants access only to files created by the app — it cannot read the user's other Drive files. The refresh token is written to Pebble via the `store.DriveTokenStore` interface after the callback. If a user logs in without Drive sync enabled and later enables it, they must sign out and back in to grant the new scope.
 
 ### 4.3 Chat & SSE Handler (`internal/chat`)
 
@@ -106,6 +112,7 @@ All pipelines receive `schema.md` as part of the system prompt to enforce wiki c
 ### 4.6 Chat History Store (`internal/store`)
 
 - Uses Pebble as the storage engine via `cockroachdb/pebble` Go bindings.
+- Exposes a `DriveTokenStore` interface (`GetDriveToken / SetDriveToken`) implemented by `PebbleStore`. This is the handoff point between `internal/auth` (which writes the refresh token at login) and `internal/drivesync` (which reads it at startup) — neither package imports the other; both depend on `store`.
 - Key schema:
 
   ```
@@ -126,7 +133,55 @@ All pipelines receive `schema.md` as part of the system prompt to enforce wiki c
 - Appends two single-line entries to `log.md`: `dream started` at the beginning, and `dream ended - <20-word summary>` on completion (or `dream ended - error: ...` on failure).
 - Can also be triggered manually via `POST /api/dream/run` (returns 202, runs in background).
 
-### 4.8 Remix Frontend (`web/`)
+### 4.8 Drive Sync (`internal/drivesync`)
+
+Activated only when `drive_sync.enabled: true`. Manages two independent concerns: vault file sync and Pebble backup.
+
+`drivesync.New(cfg, db, vaultPath, tokenStore)` is the single entry point — it owns all internal construction and returns a `*SyncManager`. `main.go` calls `New(...)` then `go sm.Start(ctx)`; it has no knowledge of drivesync internals. `SyncManager.Start` checks for the refresh token itself: if absent it logs a clear message and returns without error, so the user is never left with a silent no-op.
+
+`PersistingTokenSource` wraps the `oauth2.TokenSource` built from the stored refresh token. On each token refresh it writes the updated refresh token back to Pebble via `DriveTokenStore`, so a server restart after a mid-lifetime refresh always finds a valid token.
+
+#### Vault Sync
+
+**Local → Drive (upload)**
+- `fsnotify` watches `VAULT_PATH` recursively. File create/write/rename/delete events are funnelled into a per-path debounce queue (2 s quiet period) to avoid thrashing on rapid successive writes.
+- Each changed file is uploaded to the configured Drive folder (`drive_sync.vault_folder_name`), preserving the subdirectory structure as Drive folders. Drive folder IDs are tracked in Pebble under `drive_sync:folders:` so each subfolder is created at most once.
+- On first run, the sync manager does a full reconciliation: lists all local vault files and uploads anything not yet tracked in sync state.
+- All upload and trash operations are serialised through a single worker goroutine fed by a buffered channel. This prevents duplicate uploads and state corruption when the initial reconcile and live watcher run concurrently.
+- The mapping of local relative path → Drive file ID is persisted in Pebble under the prefix `drive_sync:files:`.
+
+**Drive → Local (download)**
+- A polling goroutine calls `changes.list` with a stored page token every `drive_sync.poll_interval_secs` seconds (default 60).
+- The page token is stored in Pebble under `drive_sync:page_token`. On first run, `changes.getStartPageToken` initialises it.
+- For each changed Drive file that falls within the vault folder, the manager compares the Drive `modifiedTime` against the locally stored last-known `modifiedTime` for that file. If Drive is newer, the file is downloaded.
+- Deletions in Drive propagate to local: if a Drive file is trashed and exists locally, the local file is deleted.
+
+**Conflict resolution** (configured via `drive_sync.conflict_strategy`):
+- `last_write_wins` (default): whichever side has the later modification time wins. The other version is silently overwritten, regardless of how close the timestamps are.
+- `keep_both`: behaves identically to `last_write_wins` when the timestamps differ by more than 5 seconds. When both sides were modified within a 5-second window (genuinely concurrent edits), the older version is saved as `<name>.conflict.<YYYYMMDDHHMMSS>.md` before the newer version is written.
+
+#### Pebble Backup
+
+- A background goroutine runs on a configurable interval (`drive_sync.pebble_backup.interval_mins`, default 30).
+- Uses `pebble.DB.Checkpoint(tmpDir)` to create a consistent, point-in-time snapshot of the entire database while it remains open and writable.
+- The checkpoint directory is archived as a `tar.gz` and uploaded to a fixed file in Drive named `autowiki-pebble-backup.tar.gz`, replacing the previous backup.
+- **Restore on startup**: at server boot, before opening Pebble, if `PEBBLE_PATH` does not exist or is an empty directory, the manager downloads `autowiki-pebble-backup.tar.gz` from Drive (if present) and extracts it to `PEBBLE_PATH` before the DB is opened.
+
+#### Package Layout
+
+```
+internal/drivesync/
+  manager.go    — SyncManager + New() factory; starts/stops watcher, poller, and backup goroutines
+  token.go      — PersistingTokenSource: wraps oauth2.TokenSource, writes updated tokens to Pebble
+  client.go     — Drive API wrapper: upload, trash, list changes, folder management
+  watcher.go    — fsnotify watcher with 2 s per-path debounce queue
+  state.go      — Pebble-backed sync state (file ID map, folder ID map, page token)
+  backup.go     — Pebble checkpoint → tar.gz → Drive upload; restore on startup
+```
+
+---
+
+### 4.9 Remix Frontend (`web/`)
 
 - Built with React Router (Remix) as a single-page application.
 - Built output is placed in `public/` and served statically by the Go server.
@@ -243,6 +298,27 @@ Triggers an immediate dream consolidation in the background (auth required).
 
 ---
 
+### `GET /api/drive/status`
+
+Returns the current Drive sync state. Only meaningful when `drive_sync.enabled: true`.
+
+**Response**:
+```json
+{
+  "enabled": true,
+  "connected": true,
+  "last_vault_sync": "2026-04-19T10:30:00Z",
+  "last_pebble_backup": "2026-04-19T10:00:00Z",
+  "last_error": null
+}
+```
+
+- `connected`: `true` if a valid Drive refresh token is stored in Pebble. `false` means the user needs to sign out and sign back in to grant the Drive scope.
+- `last_vault_sync`: timestamp of the most recent successful upload or download.
+- `last_pebble_backup`: timestamp of the most recent successful Pebble backup upload.
+
+---
+
 ## 8. Prompt Caching
 
 Every request to the Anthropic API includes a large, static payload: the system prompt (identity, instructions, tool-use guidance, vault index) and the full tool definitions for `read_page`, `search_vault`, and `save_to_vault`. This content is identical across all turns in a conversation and changes only when the vault index is updated.
@@ -315,4 +391,14 @@ dream:
   enabled: true
   start_hour_utc: 19   # 19:00 UTC ≈ 1:00 AM IST
   end_hour_utc: 23     # 23:00 UTC ≈ 5:00 AM IST
+drive_sync:
+  enabled: false
+  vault_folder_name: "autowiki-vault"        # Drive folder to create/use for vault files
+  poll_interval_secs: 60                     # how often to poll Drive for remote changes
+  conflict_strategy: "last_write_wins"       # "last_write_wins" | "keep_both"
+  pebble_backup:
+    enabled: false
+    interval_mins: 30                        # how often to snapshot and upload the Pebble DB
 ```
+
+> **Note**: `drive_sync.enabled` requires the user to sign in (or re-sign-in) with the `drive.file` OAuth scope. On first enable, sign out and back in. The same `google_client_id` / `google_client_secret` are reused — no additional Google Cloud configuration is needed beyond enabling the Drive API in the same Google Cloud project.

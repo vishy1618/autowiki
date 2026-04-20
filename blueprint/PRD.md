@@ -18,14 +18,17 @@ The human curates sources and asks questions. The LLM handles the bookkeeping.
 - Persist full chat history locally.
 - Run a nightly background process ("dream state") to consolidate and reorganize the wiki.
 - Keep the entire system local and single-instance.
+- Optionally sync the vault to Google Drive for cloud backup and cross-device access.
+- Optionally back up the chat history database to Google Drive for durability.
 
 ## 3. Non-Goals
 
 - No multi-user support — a single whitelisted email address may access the service.
-- No cloud sync or remote hosting.
+- No remote hosting — the server runs locally. Google Drive sync is an optional, opt-in feature for backup and cross-device access, not a hosting model.
 - No custom vector database or embedding search.
 - No mobile app.
 - No manual vault write triggers — all writes are automated and LLM-judged.
+- No real-time collaborative editing. Drive sync replicates files; it does not provide simultaneous multi-editor access.
 
 ---
 
@@ -50,6 +53,11 @@ Each story follows the INVEST principle: Independent, Negotiable, Valuable, Esti
 | [US-13](./user-stories/US-13.md) | Sliding session expiry | Auth |
 | [US-14](./user-stories/US-14.md) | Search past conversations | Knowledge Retrieval |
 | [US-15](./user-stories/US-15.md) | Search the web and fetch URLs | Knowledge Capture |
+| [US-16](./user-stories/US-16.md) | Upload vault to Google Drive | Cloud Backup |
+| [US-17](./user-stories/US-17.md) | Sync Drive changes back to vault | Cloud Backup |
+| [US-18](./user-stories/US-18.md) | Drive sync status | Cloud Backup |
+| [US-19](./user-stories/US-19.md) | Back up chat history to Google Drive | Cloud Backup |
+| [US-20](./user-stories/US-20.md) | Restore chat history from Google Drive | Cloud Backup |
 
 ---
 
@@ -120,5 +128,5 @@ A summary of what was changed is appended to `log.md` each night it runs.
 - Multiple vault support
 - Plugin system
 - Mobile interface
-- Export / backup tooling
 - Semantic/vector search
+- Google Drive sync is in scope (US-16, US-17), but running Obsidian Sync alongside Drive sync is not supported — use one or the other.
