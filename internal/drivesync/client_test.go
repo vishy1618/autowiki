@@ -241,6 +241,132 @@ func TestDriveClient_Upload_CreatesFileAndReturnsDriveID(t *testing.T) {
 }
 
 
+// --- ListFolder ---
+
+func TestDriveClient_ListFolder_ReturnsFlatFileList(t *testing.T) {
+	// Arrange — folder contains two files, no subfolders.
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			jsonResponse(w, map[string]any{
+				"files": []map[string]any{
+					{"id": "f1", "name": "alpha.md", "mimeType": "text/plain", "modifiedTime": "2024-01-01T00:00:00Z", "md5Checksum": "aaa"},
+					{"id": "f2", "name": "beta.md", "mimeType": "text/plain", "modifiedTime": "2024-01-02T00:00:00Z", "md5Checksum": "bbb"},
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client, err := drivesync.NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		t.Fatalf("NewDriveClient: %v", err)
+	}
+
+	// Act
+	files, err := client.ListFolder("root-id")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("ListFolder: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("want 2 files, got %d: %v", len(files), files)
+	}
+	if files[0].RelPath != "alpha.md" || files[0].ID != "f1" || files[0].MD5 != "aaa" {
+		t.Errorf("unexpected first file: %+v", files[0])
+	}
+	if files[1].RelPath != "beta.md" || files[1].ID != "f2" {
+		t.Errorf("unexpected second file: %+v", files[1])
+	}
+}
+
+func TestDriveClient_ListFolder_RecursesIntoSubfolders(t *testing.T) {
+	// Arrange — root contains one subfolder; subfolder contains one file.
+	callCount := 0
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			switch callCount {
+			case 1: // root listing → one subfolder
+				jsonResponse(w, map[string]any{
+					"files": []map[string]any{
+						{"id": "sub1", "name": "notes", "mimeType": "application/vnd.google-apps.folder"},
+					},
+				})
+			case 2: // subfolder listing → one file
+				jsonResponse(w, map[string]any{
+					"files": []map[string]any{
+						{"id": "f1", "name": "note.md", "mimeType": "text/plain", "modifiedTime": "2024-01-01T00:00:00Z", "md5Checksum": "ccc"},
+					},
+				})
+			default:
+				jsonResponse(w, map[string]any{"files": []any{}})
+			}
+		},
+	})
+	defer srv.Close()
+
+	client, err := drivesync.NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		t.Fatalf("NewDriveClient: %v", err)
+	}
+
+	// Act
+	files, err := client.ListFolder("root-id")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("ListFolder: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("want 1 file, got %d: %v", len(files), files)
+	}
+	if files[0].RelPath != "notes/note.md" {
+		t.Errorf("want RelPath %q, got %q", "notes/note.md", files[0].RelPath)
+	}
+}
+
+func TestDriveClient_ListFolder_HandlesPagination(t *testing.T) {
+	// Arrange — two pages of results.
+	callCount := 0
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if r.URL.Query().Get("pageToken") == "page2" {
+				jsonResponse(w, map[string]any{
+					"files": []map[string]any{
+						{"id": "f2", "name": "beta.md", "mimeType": "text/plain", "modifiedTime": "2024-01-02T00:00:00Z", "md5Checksum": "bbb"},
+					},
+				})
+				return
+			}
+			jsonResponse(w, map[string]any{
+				"nextPageToken": "page2",
+				"files": []map[string]any{
+					{"id": "f1", "name": "alpha.md", "mimeType": "text/plain", "modifiedTime": "2024-01-01T00:00:00Z", "md5Checksum": "aaa"},
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client, err := drivesync.NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		t.Fatalf("NewDriveClient: %v", err)
+	}
+
+	// Act
+	files, err := client.ListFolder("root-id")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("ListFolder: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("want 2 files from 2 pages, got %d: %v", len(files), files)
+	}
+}
+
 func TestDriveClient_EnsureFolder_ReturnsExistingFolderID(t *testing.T) {
 	// Arrange — Drive returns a file list with one matching folder.
 	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{

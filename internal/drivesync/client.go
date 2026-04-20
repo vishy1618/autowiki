@@ -142,6 +142,67 @@ func (c *DriveClient) Trash(driveFileID string) error {
 	return nil
 }
 
+// DriveFile holds the Drive metadata for a single file returned by ListFolder.
+type DriveFile struct {
+	ID           string
+	RelPath      string
+	ModifiedTime string
+	MD5          string
+}
+
+// ListFolder lists all non-trashed files recursively under folderID.
+// RelPath is relative to folderID (e.g. "notes/meeting.md").
+// Used by US-17 download reconciliation.
+func (c *DriveClient) ListFolder(folderID string) ([]DriveFile, error) {
+	return c.listFolderRecursive(folderID, "")
+}
+
+func (c *DriveClient) listFolderRecursive(folderID, prefix string) ([]DriveFile, error) {
+	q := fmt.Sprintf("'%s' in parents and trashed = false", folderID)
+	var result []DriveFile
+	var pageToken string
+
+	for {
+		call := c.svc.Files.List().
+			Q(q).
+			Fields("nextPageToken, files(id,name,mimeType,modifiedTime,md5Checksum)")
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
+		list, err := call.Do()
+		if err != nil {
+			return nil, fmt.Errorf("listing folder %s: %w", folderID, err)
+		}
+
+		for _, f := range list.Files {
+			relPath := f.Name
+			if prefix != "" {
+				relPath = prefix + "/" + f.Name
+			}
+			if f.MimeType == "application/vnd.google-apps.folder" {
+				children, err := c.listFolderRecursive(f.Id, relPath)
+				if err != nil {
+					return nil, err
+				}
+				result = append(result, children...)
+			} else {
+				result = append(result, DriveFile{
+					ID:           f.Id,
+					RelPath:      relPath,
+					ModifiedTime: f.ModifiedTime,
+					MD5:          f.Md5Checksum,
+				})
+			}
+		}
+
+		pageToken = list.NextPageToken
+		if pageToken == "" {
+			break
+		}
+	}
+	return result, nil
+}
+
 // GetStartPageToken returns the current start page token for Drive changes,
 // used to initialise polling in US-17.
 func (c *DriveClient) GetStartPageToken() (string, error) {

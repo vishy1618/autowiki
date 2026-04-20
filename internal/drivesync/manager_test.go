@@ -24,6 +24,22 @@ func TestSyncManager_Start_NoOpWhenNoRefreshToken(t *testing.T) {
 	sm.Start(context.Background())
 }
 
+func TestSyncManager_Start_ReturnsWithoutPanicWhenDriveErrors(t *testing.T) {
+	// Arrange — fake Drive returns 500 for every request.
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "simulated drive failure", http.StatusInternalServerError)
+		},
+	})
+	defer srv.Close()
+
+	sm := drivesync.NewWithHTTPClient(testCfg, openTestPebble(t), t.TempDir(), httpClient)
+
+	// Act — must log the error and return cleanly (no panic, no hang).
+	sm.Start(context.Background())
+	sm.Shutdown()
+}
+
 func TestSyncManager_Start_CreatesVaultFolderUnderRoot(t *testing.T) {
 	// Arrange — pre-built client; fake Drive records folder creation order.
 	var created []string
