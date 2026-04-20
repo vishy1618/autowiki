@@ -1,4 +1,5 @@
 bin/
+pebble-read
 public/
 web/node_modules/
 web/build/
