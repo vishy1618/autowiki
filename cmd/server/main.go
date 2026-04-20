@@ -10,6 +10,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/suvish/autowiki/internal/config"
 	"github.com/suvish/autowiki/internal/dream"
+	"github.com/suvish/autowiki/internal/drivesync"
 	"github.com/suvish/autowiki/internal/llm"
 	"github.com/suvish/autowiki/internal/server"
 	"github.com/suvish/autowiki/internal/store"
@@ -71,6 +72,13 @@ func main() {
 	var driveTokenStore store.DriveTokenStore
 	if cfg.DriveSync.Enabled {
 		driveTokenStore = sessions
+	}
+
+	if cfg.DriveSync.Enabled {
+		syncCtx, syncCancel := context.WithCancel(context.Background())
+		defer syncCancel()
+		sm := drivesync.New(cfg.DriveSync, cfg.Auth.GoogleClientID, cfg.Auth.GoogleClientSecret, sessions)
+		go sm.Start(syncCtx)
 	}
 
 	srv := server.New(cfg, sessions, chats, haikuClient, vm, haikuClient, consolidateFn, driveTokenStore, *dev)

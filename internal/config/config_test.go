@@ -100,8 +100,11 @@ func TestConfig_DriveSync_DefaultsApplied(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.DriveSync.VaultFolderName != "autowiki-vault" {
-		t.Errorf("VaultFolderName: want %q, got %q", "autowiki-vault", cfg.DriveSync.VaultFolderName)
+	if cfg.DriveSync.RootFolderName != "autowiki" {
+		t.Errorf("RootFolderName: want %q, got %q", "autowiki", cfg.DriveSync.RootFolderName)
+	}
+	if cfg.DriveSync.VaultFolderName != "vault" {
+		t.Errorf("VaultFolderName: want %q, got %q", "vault", cfg.DriveSync.VaultFolderName)
 	}
 	if cfg.DriveSync.PollIntervalSecs != 60 {
 		t.Errorf("PollIntervalSecs: want 60, got %d", cfg.DriveSync.PollIntervalSecs)

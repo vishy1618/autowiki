@@ -393,12 +393,13 @@ dream:
   end_hour_utc: 23     # 23:00 UTC ≈ 5:00 AM IST
 drive_sync:
   enabled: false
-  vault_folder_name: "autowiki-vault"        # Drive folder to create/use for vault files
+  root_folder_name: "autowiki"               # parent folder created at the root of My Drive
+  vault_folder_name: "vault"                 # subfolder under root for vault files (→ autowiki/vault)
   poll_interval_secs: 60                     # how often to poll Drive for remote changes
   conflict_strategy: "last_write_wins"       # "last_write_wins" | "keep_both"
   pebble_backup:
     enabled: false
-    interval_mins: 30                        # how often to snapshot and upload the Pebble DB
+    interval_mins: 30                        # how often to snapshot and upload the Pebble DB (→ autowiki/pebble)
 ```
 
 > **Note**: `drive_sync.enabled` requires the user to sign in (or re-sign-in) with the `drive.file` OAuth scope. On first enable, sign out and back in. The same `google_client_id` / `google_client_secret` are reused — no additional Google Cloud configuration is needed beyond enabling the Drive API in the same Google Cloud project.

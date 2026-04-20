@@ -35,6 +35,7 @@ type DreamConfig struct {
 
 type DriveSyncConfig struct {
 	Enabled          bool   `yaml:"enabled"`
+	RootFolderName   string `yaml:"root_folder_name"`
 	VaultFolderName  string `yaml:"vault_folder_name"`
 	PollIntervalSecs int    `yaml:"poll_interval_secs"`
 	ConflictStrategy string `yaml:"conflict_strategy"`
@@ -83,8 +84,11 @@ func (c *Config) validate() error {
 	if c.Dream.EndHourUTC == 0 {
 		c.Dream.EndHourUTC = 23
 	}
+	if c.DriveSync.RootFolderName == "" {
+		c.DriveSync.RootFolderName = "autowiki"
+	}
 	if c.DriveSync.VaultFolderName == "" {
-		c.DriveSync.VaultFolderName = "autowiki-vault"
+		c.DriveSync.VaultFolderName = "vault"
 	}
 	if c.DriveSync.PollIntervalSecs == 0 {
 		c.DriveSync.PollIntervalSecs = 60
