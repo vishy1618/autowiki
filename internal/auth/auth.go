@@ -15,7 +15,7 @@ import (
 	"github.com/suvish/autowiki/internal/store"
 )
 
-const driveFileScope = "https://www.googleapis.com/auth/drive.file"
+const driveScope = "https://www.googleapis.com/auth/drive"
 
 const (
 	sessionCookieName   = "autowiki_session"
@@ -48,7 +48,7 @@ type Handler struct {
 func NewHandler(cfg Config, sessions store.SessionStore, driveTokenStore store.DriveTokenStore) *Handler {
 	scopes := []string{"openid", "email"}
 	if driveTokenStore != nil {
-		scopes = append(scopes, driveFileScope)
+		scopes = append(scopes, driveScope)
 	}
 	oauthCfg := &oauth2.Config{
 		ClientID:     cfg.GoogleClientID,

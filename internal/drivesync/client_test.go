@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -53,6 +54,202 @@ func jsonResponse(w http.ResponseWriter, v any) {
 
 func parseBody(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// --- ListChanges ---
+
+func TestDriveClient_ListChanges_ReturnsSinglePageOfChanges(t *testing.T) {
+	// Arrange
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/changes": func(w http.ResponseWriter, r *http.Request) {
+			jsonResponse(w, map[string]any{
+				"newStartPageToken": "next-tok",
+				"changes": []map[string]any{
+					{
+						"fileId":  "f1",
+						"removed": false,
+						"file": map[string]any{
+							"name":         "notes.md",
+							"parents":      []string{"parent-id"},
+							"modifiedTime": "2024-01-01T00:00:00Z",
+							"md5Checksum":  "abc",
+							"trashed":      false,
+						},
+					},
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client, err := drivesync.NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		t.Fatalf("NewDriveClient: %v", err)
+	}
+
+	// Act
+	changes, newToken, err := client.ListChanges("tok-1")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("ListChanges: %v", err)
+	}
+	if newToken != "next-tok" {
+		t.Errorf("newStartPageToken: want %q, got %q", "next-tok", newToken)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("want 1 change, got %d", len(changes))
+	}
+	c := changes[0]
+	if c.FileID != "f1" {
+		t.Errorf("FileID: want %q, got %q", "f1", c.FileID)
+	}
+	if c.Name != "notes.md" {
+		t.Errorf("Name: want %q, got %q", "notes.md", c.Name)
+	}
+	if c.ParentID != "parent-id" {
+		t.Errorf("ParentID: want %q, got %q", "parent-id", c.ParentID)
+	}
+	if c.Removed {
+		t.Error("want Removed=false")
+	}
+}
+
+func TestDriveClient_ListChanges_HandlesPaginationAndReturnsNewStartPageToken(t *testing.T) {
+	// Arrange — two pages; second page has newStartPageToken.
+	callCount := 0
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/changes": func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if r.URL.Query().Get("pageToken") == "page2" {
+				jsonResponse(w, map[string]any{
+					"newStartPageToken": "final-tok",
+					"changes": []map[string]any{
+						{"fileId": "f2", "removed": false, "file": map[string]any{"name": "b.md", "parents": []string{"p"}}},
+					},
+				})
+				return
+			}
+			jsonResponse(w, map[string]any{
+				"nextPageToken": "page2",
+				"changes": []map[string]any{
+					{"fileId": "f1", "removed": false, "file": map[string]any{"name": "a.md", "parents": []string{"p"}}},
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client, err := drivesync.NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		t.Fatalf("NewDriveClient: %v", err)
+	}
+
+	// Act
+	changes, newToken, err := client.ListChanges("tok-1")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("ListChanges: %v", err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("want 2 changes, got %d", len(changes))
+	}
+	if newToken != "final-tok" {
+		t.Errorf("newStartPageToken: want %q, got %q", "final-tok", newToken)
+	}
+}
+
+func TestDriveClient_ListChanges_ExcludesFolderChanges(t *testing.T) {
+	// Arrange — one folder change and one file change; only the file should be returned.
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/changes": func(w http.ResponseWriter, r *http.Request) {
+			jsonResponse(w, map[string]any{
+				"newStartPageToken": "tok-2",
+				"changes": []map[string]any{
+					{
+						"fileId":  "folder-id",
+						"removed": false,
+						"file": map[string]any{
+							"name":     "notes",
+							"parents":  []string{"vault-root"},
+							"mimeType": "application/vnd.google-apps.folder",
+						},
+					},
+					{
+						"fileId":  "file-id",
+						"removed": false,
+						"file": map[string]any{
+							"name":         "todo.md",
+							"parents":      []string{"vault-root"},
+							"mimeType":     "text/plain",
+							"modifiedTime": "2024-01-01T00:00:00Z",
+						},
+					},
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client, err := drivesync.NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		t.Fatalf("NewDriveClient: %v", err)
+	}
+
+	// Act
+	changes, _, err := client.ListChanges("tok-1")
+
+	// Assert — only the file is returned; folder is filtered out.
+	if err != nil {
+		t.Fatalf("ListChanges: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("want 1 change (file only), got %d: %v", len(changes), changes)
+	}
+	if changes[0].FileID != "file-id" {
+		t.Errorf("want file-id, got %q", changes[0].FileID)
+	}
+}
+
+func TestDriveClient_ListChanges_RemovalHasNoFileMetadata(t *testing.T) {
+	// Arrange — a permanent delete: Removed=true, no file metadata.
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/changes": func(w http.ResponseWriter, r *http.Request) {
+			jsonResponse(w, map[string]any{
+				"newStartPageToken": "tok-2",
+				"changes": []map[string]any{
+					{"fileId": "f-gone", "removed": true},
+				},
+			})
+		},
+	})
+	defer srv.Close()
+
+	client, err := drivesync.NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		t.Fatalf("NewDriveClient: %v", err)
+	}
+
+	// Act
+	changes, _, err := client.ListChanges("tok-1")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("ListChanges: %v", err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("want 1 change, got %d", len(changes))
+	}
+	if !changes[0].Removed {
+		t.Error("want Removed=true")
+	}
+	if changes[0].FileID != "f-gone" {
+		t.Errorf("FileID: want %q, got %q", "f-gone", changes[0].FileID)
+	}
+	if changes[0].Name != "" {
+		t.Errorf("want empty Name for permanent delete, got %q", changes[0].Name)
+	}
 }
 
 // --- GetStartPageToken ---
@@ -229,7 +426,7 @@ func TestDriveClient_Upload_CreatesFileAndReturnsDriveID(t *testing.T) {
 	}
 
 	// Act
-	driveID, err := client.Upload("todo.md", localPath, "parent-folder-id")
+	driveID, _, _, err := client.Upload("todo.md", localPath, "parent-folder-id")
 
 	// Assert
 	if err != nil {
@@ -240,6 +437,51 @@ func TestDriveClient_Upload_CreatesFileAndReturnsDriveID(t *testing.T) {
 	}
 }
 
+
+func TestDriveClient_Upload_ReturnsMD5AndModifiedTime(t *testing.T) {
+	// Arrange — Drive returns id, md5Checksum, and modifiedTime on create.
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				jsonResponse(w, map[string]any{"files": []any{}})
+				return
+			}
+			jsonResponse(w, map[string]any{"id": "new-id", "md5Checksum": "deadbeef", "modifiedTime": "2024-06-01T10:00:00Z"})
+		},
+		"/upload/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			jsonResponse(w, map[string]any{"id": "new-id", "md5Checksum": "deadbeef", "modifiedTime": "2024-06-01T10:00:00Z"})
+		},
+	})
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "file.md")
+	if err := os.WriteFile(localPath, []byte("content"), 0644); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+
+	client, err := drivesync.NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		t.Fatalf("NewDriveClient: %v", err)
+	}
+
+	// Act
+	driveID, md5, modTime, err := client.Upload("file.md", localPath, "parent-id")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if driveID == "" {
+		t.Error("want non-empty driveID")
+	}
+	if md5 == "" {
+		t.Error("want non-empty md5")
+	}
+	if modTime == "" {
+		t.Error("want non-empty modifiedTime")
+	}
+}
 
 // --- ListFolder ---
 
@@ -364,6 +606,39 @@ func TestDriveClient_ListFolder_HandlesPagination(t *testing.T) {
 	}
 	if len(files) != 2 {
 		t.Fatalf("want 2 files from 2 pages, got %d: %v", len(files), files)
+	}
+}
+
+// --- Download ---
+
+func TestDriveClient_Download_WritesFileContentsToLocalPath(t *testing.T) {
+	// Arrange — fake Drive serves file content on alt=media request.
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"alt=media": func(w http.ResponseWriter, _ *http.Request) {
+			w.Write([]byte("# Hello World"))
+		},
+	})
+	defer srv.Close()
+
+	client, err := drivesync.NewDriveClient(context.Background(), httpClient)
+	if err != nil {
+		t.Fatalf("NewDriveClient: %v", err)
+	}
+	localPath := filepath.Join(t.TempDir(), "subdir", "file.md")
+
+	// Act
+	err = client.Download("file-id-123", localPath)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	got, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("reading downloaded file: %v", err)
+	}
+	if string(got) != "# Hello World" {
+		t.Errorf("want %q, got %q", "# Hello World", string(got))
 	}
 }
 

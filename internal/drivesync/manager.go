@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -18,12 +19,14 @@ import (
 	"github.com/suvish/autowiki/internal/store"
 )
 
-type uploadJob struct {
-	relPath   string
-	localPath string
-	parentID  string
-	isTrash   bool
-	driveID   string // set for trash jobs
+type syncJob struct {
+	relPath     string
+	localPath   string
+	parentID    string
+	isTrash     bool
+	driveID     string // set for trash jobs
+	download    bool   // set for download jobs
+	driveFileID string // set for download jobs
 }
 
 // SyncManager orchestrates vault→Drive upload. Constructed via New().
@@ -34,14 +37,16 @@ type SyncManager struct {
 	driveClient     *DriveClient // nil until Start() builds it (or NewWithHTTPClient sets it)
 	state           *State
 	vaultPath       string
-	uploadCh        chan uploadJob
+	syncCh        chan syncJob
 	wg              sync.WaitGroup
 	workerOnce      sync.Once
 	shutdownOnce    sync.Once
 	watcher         *Watcher
 	watcherDone     chan struct{}
 	watcherDebounce time.Duration // 0 → use default (2s)
-	vaultFolderID   string        // cached after Start(); never changes during process lifetime
+	vaultFolderID    string     // cached after Start(); never changes during process lifetime
+	bgCancel         context.CancelFunc
+	pendingDownloads sync.Map  // relPath → struct{}; suppresses fsnotify echo after Drive download
 }
 
 // New returns a SyncManager ready to Start. The DriveClient is built lazily
@@ -51,7 +56,7 @@ func New(cfg config.DriveSyncConfig, clientID, clientSecret string, db *pebble.D
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Endpoint:     google.Endpoint,
-		Scopes:       []string{drive.DriveFileScope},
+		Scopes:       []string{drive.DriveScope},
 	}
 	return &SyncManager{
 		cfg:        cfg,
@@ -59,7 +64,7 @@ func New(cfg config.DriveSyncConfig, clientID, clientSecret string, db *pebble.D
 		tokenStore: tokenStore,
 		state:      NewState(db),
 		vaultPath:  vaultPath,
-		uploadCh:   make(chan uploadJob, 200),
+		syncCh:   make(chan syncJob, 200),
 	}
 }
 
@@ -75,7 +80,7 @@ func NewWithHTTPClient(cfg config.DriveSyncConfig, db *pebble.DB, vaultPath stri
 		driveClient: dc,
 		state:       NewState(db),
 		vaultPath:   vaultPath,
-		uploadCh:    make(chan uploadJob, 200),
+		syncCh:    make(chan syncJob, 200),
 	}
 }
 
@@ -141,7 +146,12 @@ func (sm *SyncManager) Start(ctx context.Context) {
 		slog.Info("drive sync: start page token stored", "token", pageToken)
 	}
 
-	sm.reconcileUpload(ctx)
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	sm.bgCancel = bgCancel
+
+	sm.reconcileUpload(bgCtx)
+
+	sm.startPoller(bgCtx)
 
 	debounce := sm.watcherDebounce
 	if debounce == 0 {
@@ -220,7 +230,7 @@ func (sm *SyncManager) reconcileUpload(ctx context.Context) {
 
 		relPathSlash := filepath.ToSlash(relPath)
 		slog.Info("drive sync: queuing reconcile upload", "path", relPathSlash)
-		sm.uploadCh <- uploadJob{
+		sm.syncCh <- syncJob{
 			relPath:   relPathSlash,
 			localPath: path,
 			parentID:  parentID,
@@ -233,26 +243,35 @@ func (sm *SyncManager) reconcileUpload(ctx context.Context) {
 	slog.Info("drive sync: reconcile complete")
 }
 
-// Shutdown stops the watcher (if running), drains the upload worker, and returns.
+// Shutdown stops all background goroutines and drains the sync worker.
 // Safe to call multiple times.
 func (sm *SyncManager) Shutdown() {
+	if sm.bgCancel != nil {
+		sm.bgCancel()
+	}
 	if sm.watcher != nil {
 		sm.watcher.Close()
 		<-sm.watcherDone
 	}
-	sm.shutdownOnce.Do(func() { close(sm.uploadCh) })
+	sm.shutdownOnce.Do(func() { close(sm.syncCh) })
 	sm.wg.Wait()
 }
 
 func (sm *SyncManager) handleFileEvent(event FileEvent) {
+	// Suppress echo: if we wrote this file ourselves (download from Drive), skip it.
+	if _, downloaded := sm.pendingDownloads.LoadAndDelete(event.RelPath); downloaded {
+		slog.Info("drive sync: suppressing echo upload after download", "path", event.RelPath)
+		return
+	}
 	slog.Info("drive sync: watcher event", "path", event.RelPath, "op", event.Op)
 
 	if event.Op == OpRemove || event.Op == OpRename {
 		existing, err := sm.state.GetFile(event.RelPath)
 		if err != nil || existing == nil {
-			return // not tracked — nothing to trash
+			slog.Debug("drive sync: ignoring remove for untracked file", "path", event.RelPath)
+			return
 		}
-		sm.uploadCh <- uploadJob{isTrash: true, relPath: event.RelPath, driveID: existing.DriveID}
+		sm.syncCh <- syncJob{isTrash: true, relPath: event.RelPath, driveID: existing.DriveID}
 		return
 	}
 
@@ -269,11 +288,122 @@ func (sm *SyncManager) handleFileEvent(event FileEvent) {
 		}
 	}
 
-	sm.uploadCh <- uploadJob{
+	sm.syncCh <- syncJob{
 		relPath:   event.RelPath,
 		localPath: localPath,
 		parentID:  parentID,
 	}
+}
+
+// startPoller launches a goroutine that polls Drive for changes on a ticker.
+func (sm *SyncManager) startPoller(ctx context.Context) {
+	interval := time.Duration(sm.cfg.PollIntervalSecs) * time.Second
+	if interval == 0 {
+		interval = 60 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	sm.wg.Add(1)
+	go func() {
+		defer sm.wg.Done()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				sm.pollOnce(ctx)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// pollOnce fetches one batch of Drive changes and processes them.
+func (sm *SyncManager) pollOnce(ctx context.Context) {
+	pageToken, err := sm.state.GetPageToken()
+	if err != nil || pageToken == "" {
+		slog.Debug("drive sync: poll skipped — no page token stored")
+		return
+	}
+
+	slog.Info("drive sync: polling for changes", "pageToken", pageToken)
+	changes, newToken, err := sm.driveClient.ListChanges(pageToken)
+	if err != nil {
+		slog.Warn("drive sync: listing changes failed, retrying once", "err", err)
+		time.Sleep(2 * time.Second)
+		changes, newToken, err = sm.driveClient.ListChanges(pageToken)
+		if err != nil {
+			slog.Error("drive sync: listing changes", "err", err)
+			_ = sm.state.SetLastError(err.Error())
+			return
+		}
+	}
+
+	slog.Info("drive sync: poll complete", "changes", len(changes), "newToken", newToken)
+
+	for _, change := range changes {
+		sm.processChange(ctx, change)
+	}
+
+	if newToken != "" && newToken != pageToken {
+		if err := sm.state.SetPageToken(newToken); err != nil {
+			slog.Error("drive sync: storing page token after poll", "err", err)
+		}
+	}
+}
+
+func (sm *SyncManager) processChange(ctx context.Context, change DriveChange) {
+	slog.Debug("drive sync: processing change", "fileID", change.FileID, "name", change.Name, "parentID", change.ParentID, "removed", change.Removed, "modifiedTime", change.ModifiedTime)
+
+	if change.Removed || change.Name == "" {
+		// Permanent delete or trashed: resolve via reverse file lookup.
+		relPath, err := sm.state.GetFileByDriveID(change.FileID)
+		if err != nil || relPath == "" {
+			slog.Debug("drive sync: removal change skipped — file not tracked locally", "fileID", change.FileID)
+			return
+		}
+		localPath := filepath.Join(sm.vaultPath, filepath.FromSlash(relPath))
+		if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
+			slog.Error("drive sync: deleting local file", "path", relPath, "err", err)
+		}
+		if err := sm.state.DeleteFile(relPath); err != nil {
+			slog.Error("drive sync: removing file state after Drive deletion", "path", relPath, "err", err)
+		}
+		slog.Info("drive sync: local file deleted (Drive removal)", "path", relPath)
+		return
+	}
+
+	relPath, ok := sm.resolveRelPath(change)
+	if !ok {
+		slog.Warn("drive sync: change skipped — parent folder not in state", "fileID", change.FileID, "name", change.Name, "parentID", change.ParentID)
+		return
+	}
+
+	// Skip if we already have this exact version (DriveModTime match means no change since last sync).
+	if existing, err := sm.state.GetFile(relPath); err == nil && existing != nil {
+		if existing.DriveModTime == change.ModifiedTime {
+			slog.Debug("drive sync: change skipped — already up to date", "path", relPath, "driveModTime", change.ModifiedTime)
+			return
+		}
+		slog.Debug("drive sync: change has newer version", "path", relPath, "stored", existing.DriveModTime, "incoming", change.ModifiedTime)
+	}
+
+	localPath := filepath.Join(sm.vaultPath, filepath.FromSlash(relPath))
+	slog.Info("drive sync: queuing download from Drive", "path", relPath, "driveID", change.FileID)
+	sm.syncCh <- syncJob{download: true, relPath: relPath, driveFileID: change.FileID, localPath: localPath}
+}
+
+// resolveRelPath derives the vault-relative path for a Drive change.
+// Returns (relPath, true) when resolved; ("", false) when the change's parent
+// is outside the vault or unknown.
+func (sm *SyncManager) resolveRelPath(change DriveChange) (string, bool) {
+	if change.ParentID == sm.vaultFolderID {
+		return change.Name, true
+	}
+	folderRelPath, err := sm.state.GetFolderByDriveID(change.ParentID)
+	if err != nil || folderRelPath == "" {
+		return "", false
+	}
+	return folderRelPath + "/" + change.Name, true
 }
 
 func (sm *SyncManager) startWorkerOnce() {
@@ -281,14 +411,36 @@ func (sm *SyncManager) startWorkerOnce() {
 		sm.wg.Add(1)
 		go func() {
 			defer sm.wg.Done()
-			for job := range sm.uploadCh {
+			for job := range sm.syncCh {
 				sm.processJob(job)
 			}
 		}()
 	})
 }
 
-func (sm *SyncManager) processJob(job uploadJob) {
+func (sm *SyncManager) processJob(job syncJob) {
+	if job.download {
+		// Mark as pending before writing so handleFileEvent can suppress the echo.
+		// Only needed when the watcher is running; during reconcile there is no watcher yet.
+		if sm.watcher != nil {
+			sm.pendingDownloads.Store(job.relPath, struct{}{})
+		}
+		if err := sm.driveClient.Download(job.driveFileID, job.localPath); err != nil {
+			sm.pendingDownloads.Delete(job.relPath) // no file written, no event will fire
+			slog.Error("drive sync: downloading file", "path", job.relPath, "err", err)
+			_ = sm.state.SetLastError(err.Error())
+			return
+		}
+		entry := FileEntry{DriveID: job.driveFileID, LocalModTime: time.Now().UTC().Format(time.RFC3339)}
+		if err := sm.state.SetFile(job.relPath, entry); err != nil {
+			slog.Error("drive sync: storing file state after download", "path", job.relPath, "err", err)
+		}
+		_ = sm.state.SetLastVaultSync(time.Now().UTC().Format(time.RFC3339))
+		_ = sm.state.SetLastError("")
+		slog.Info("drive sync: file downloaded", "path", job.relPath, "driveID", job.driveFileID)
+		return
+	}
+
 	if job.isTrash {
 		if err := sm.driveClient.Trash(job.driveID); err != nil {
 			slog.Error("drive sync: trashing file", "driveID", job.driveID, "err", err)
@@ -302,13 +454,18 @@ func (sm *SyncManager) processJob(job uploadJob) {
 		return
 	}
 
-	driveID, err := sm.driveClient.Upload(job.relPath, job.localPath, job.parentID)
+	driveID, md5, modTime, err := sm.driveClient.Upload(job.relPath, job.localPath, job.parentID)
 	if err != nil {
 		slog.Error("drive sync: uploading file", "path", job.relPath, "err", err)
 		_ = sm.state.SetLastError(err.Error())
 		return
 	}
-	entry := FileEntry{DriveID: driveID, LocalModTime: time.Now().UTC().Format(time.RFC3339)}
+	entry := FileEntry{
+		DriveID:      driveID,
+		MD5:          md5,
+		DriveModTime: modTime,
+		LocalModTime: time.Now().UTC().Format(time.RFC3339),
+	}
 	if err := sm.state.SetFile(job.relPath, entry); err != nil {
 		slog.Error("drive sync: storing file state", "path", job.relPath, "err", err)
 	}

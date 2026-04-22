@@ -1,11 +1,37 @@
 package drivesync
 
-import "time"
+import (
+	"context"
+	"path/filepath"
+	"time"
+)
+
+// PollOnceForTest triggers one synchronous poll cycle.
+func PollOnceForTest(sm *SyncManager, ctx context.Context) {
+	sm.pollOnce(ctx)
+}
+
+// SetVaultFolderIDForTest sets the cached vault folder ID on a SyncManager.
+// Used to test resolveRelPath without a full Start() cycle.
+func SetVaultFolderIDForTest(sm *SyncManager, id string) {
+	sm.vaultFolderID = id
+}
+
+// ResolveRelPathForTest calls the private resolveRelPath method.
+func ResolveRelPathForTest(sm *SyncManager, change DriveChange) (string, bool) {
+	return sm.resolveRelPath(change)
+}
+
+// EnqueueDownloadForTest injects a download job directly into the sync worker channel.
+func EnqueueDownloadForTest(sm *SyncManager, relPath, driveFileID, vaultPath string) {
+	localPath := filepath.Join(vaultPath, relPath)
+	sm.syncCh <- syncJob{download: true, relPath: relPath, driveFileID: driveFileID, localPath: localPath}
+}
 
 // EnqueueTrashForTest injects a trash job directly into the upload worker channel.
 // Only valid after the worker has been started (e.g. via ReconcileUpload or Start).
 func EnqueueTrashForTest(sm *SyncManager, relPath, driveID string) {
-	sm.uploadCh <- uploadJob{isTrash: true, relPath: relPath, driveID: driveID}
+	sm.syncCh <- syncJob{isTrash: true, relPath: relPath, driveID: driveID}
 }
 
 // NewWatcherForTest creates a Watcher with a configurable debounce duration.

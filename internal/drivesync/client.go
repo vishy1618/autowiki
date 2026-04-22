@@ -3,12 +3,14 @@ package drivesync
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -96,41 +98,62 @@ func (c *DriveClient) EnsureFolderPath(relDir, rootFolderID string, state *State
 }
 
 // Upload creates or updates a file in Drive under parentFolderID.
-// relPath is used as the Drive file name. Returns the Drive file ID.
-func (c *DriveClient) Upload(relPath, localPath, parentFolderID string) (string, error) {
+// Returns the Drive file ID, MD5 checksum, and modifiedTime from Drive's response.
+func (c *DriveClient) Upload(relPath, localPath, parentFolderID string) (driveID, md5, modifiedTime string, err error) {
 	f, err := os.Open(localPath)
 	if err != nil {
-		return "", fmt.Errorf("opening %s: %w", localPath, err)
+		return "", "", "", fmt.Errorf("opening %s: %w", localPath, err)
 	}
 	defer f.Close()
 
 	name := filepath.Base(relPath)
+	const fields googleapi.Field = "id,md5Checksum,modifiedTime"
 
-	// Check for existing file to update instead of creating a duplicate.
 	q := fmt.Sprintf("name = %q and %q in parents and trashed = false", name, parentFolderID)
 	list, err := c.svc.Files.List().Q(q).Fields("files(id)").Do()
 	if err != nil {
-		return "", fmt.Errorf("listing files for upload: %w", err)
+		return "", "", "", fmt.Errorf("listing files for upload: %w", err)
 	}
 
 	if len(list.Files) > 0 {
 		updated, err := c.svc.Files.Update(list.Files[0].Id, &drive.File{}).
-			Media(f).Fields("id").Do()
+			Media(f).Fields(fields).Do()
 		if err != nil {
-			return "", fmt.Errorf("updating file: %w", err)
+			return "", "", "", fmt.Errorf("updating file: %w", err)
 		}
-		return updated.Id, nil
+		return updated.Id, updated.Md5Checksum, updated.ModifiedTime, nil
 	}
 
-	meta := &drive.File{
-		Name:    name,
-		Parents: []string{parentFolderID},
-	}
-	created, err := c.svc.Files.Create(meta).Media(f).Fields("id").Do()
+	meta := &drive.File{Name: name, Parents: []string{parentFolderID}}
+	created, err := c.svc.Files.Create(meta).Media(f).Fields(fields).Do()
 	if err != nil {
-		return "", fmt.Errorf("uploading file: %w", err)
+		return "", "", "", fmt.Errorf("uploading file: %w", err)
 	}
-	return created.Id, nil
+	return created.Id, created.Md5Checksum, created.ModifiedTime, nil
+}
+
+// Download retrieves a Drive file by ID and writes it to localPath,
+// creating parent directories as needed.
+func (c *DriveClient) Download(driveFileID, localPath string) error {
+	resp, err := c.svc.Files.Get(driveFileID).Download()
+	if err != nil {
+		return fmt.Errorf("downloading file %s: %w", driveFileID, err)
+	}
+	defer resp.Body.Close()
+
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		return fmt.Errorf("creating directories for %s: %w", localPath, err)
+	}
+	f, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("creating local file %s: %w", localPath, err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return fmt.Errorf("writing file %s: %w", localPath, err)
+	}
+	return nil
 }
 
 // Trash moves the given Drive file to the trash.
@@ -203,12 +226,64 @@ func (c *DriveClient) listFolderRecursive(folderID, prefix string) ([]DriveFile,
 	return result, nil
 }
 
-// GetStartPageToken returns the current start page token for Drive changes,
-// used to initialise polling in US-17.
+// GetStartPageToken returns the current start page token for Drive changes.
 func (c *DriveClient) GetStartPageToken() (string, error) {
 	res, err := c.svc.Changes.GetStartPageToken().Do()
 	if err != nil {
 		return "", fmt.Errorf("getting start page token: %w", err)
 	}
 	return res.StartPageToken, nil
+}
+
+// DriveChange describes a single change returned by the Drive changes API.
+// Name and ParentID are empty for permanently deleted files (Removed=true with no metadata).
+type DriveChange struct {
+	FileID       string
+	Removed      bool
+	Name         string
+	ParentID     string
+	ModifiedTime string
+	MD5          string
+}
+
+// ListChanges fetches all changes since pageToken, handling pagination internally.
+// Returns the full list of changes and the newStartPageToken to use on the next poll.
+func (c *DriveClient) ListChanges(pageToken string) ([]DriveChange, string, error) {
+	var result []DriveChange
+	var newStartToken string
+	curToken := pageToken
+
+	for {
+		list, err := c.svc.Changes.List(curToken).
+			Fields("nextPageToken, newStartPageToken, changes(fileId,removed,file(name,parents,mimeType,modifiedTime,md5Checksum,trashed))").
+			Do()
+		if err != nil {
+			return nil, "", fmt.Errorf("listing changes: %w", err)
+		}
+
+		for _, ch := range list.Changes {
+			if ch.File != nil && ch.File.MimeType == "application/vnd.google-apps.folder" {
+				continue // folder changes are handled imperatively via EnsureFolderPath
+			}
+			dc := DriveChange{FileID: ch.FileId, Removed: ch.Removed}
+			if ch.File != nil && !ch.File.Trashed {
+				dc.Name = ch.File.Name
+				dc.ModifiedTime = ch.File.ModifiedTime
+				dc.MD5 = ch.File.Md5Checksum
+				if len(ch.File.Parents) > 0 {
+					dc.ParentID = ch.File.Parents[0]
+				}
+			}
+			result = append(result, dc)
+		}
+
+		if list.NewStartPageToken != "" {
+			newStartToken = list.NewStartPageToken
+		}
+		if list.NextPageToken == "" {
+			break
+		}
+		curToken = list.NextPageToken
+	}
+	return result, newStartToken, nil
 }

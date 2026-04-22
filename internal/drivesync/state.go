@@ -3,6 +3,7 @@ package drivesync
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -109,6 +110,54 @@ func (s *State) SetFile(relPath string, entry FileEntry) error {
 // DeleteFile removes the file entry for the given vault-relative path.
 func (s *State) DeleteFile(relPath string) error {
 	return s.delete(prefixFiles + relPath)
+}
+
+// GetFolderByDriveID scans folder entries and returns the relPath whose Drive ID matches.
+// Returns "" if not found.
+func (s *State) GetFolderByDriveID(driveID string) (string, error) {
+	return s.scanByValue(prefixFolders, driveID)
+}
+
+// GetFileByDriveID scans file entries and returns the relPath whose DriveID matches.
+// Returns "" if not found.
+func (s *State) GetFileByDriveID(driveID string) (string, error) {
+	iter, err := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte(prefixFiles),
+		UpperBound: []byte(prefixFiles + "\xff"),
+	})
+	if err != nil {
+		return "", err
+	}
+	defer iter.Close()
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		var entry FileEntry
+		if err := json.Unmarshal(iter.Value(), &entry); err != nil {
+			continue
+		}
+		if entry.DriveID == driveID {
+			return strings.TrimPrefix(string(iter.Key()), prefixFiles), nil
+		}
+	}
+	return "", iter.Error()
+}
+
+func (s *State) scanByValue(prefix, want string) (string, error) {
+	iter, err := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte(prefix),
+		UpperBound: []byte(prefix + "\xff"),
+	})
+	if err != nil {
+		return "", err
+	}
+	defer iter.Close()
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		if string(iter.Value()) == want {
+			return strings.TrimPrefix(string(iter.Key()), prefix), nil
+		}
+	}
+	return "", iter.Error()
 }
 
 // SetLastVaultSync stores an RFC3339 timestamp of the last successful sync operation.

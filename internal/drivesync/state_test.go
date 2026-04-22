@@ -160,6 +160,78 @@ func TestState_File_GetWhenNotSet_ReturnsNil(t *testing.T) {
 	}
 }
 
+// --- Reverse lookups ---
+
+func TestState_GetFolderByDriveID_ReturnsRelPathAfterSetFolder(t *testing.T) {
+	// Arrange
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+	_ = st.SetFolder("notes/work", "folder-drive-id")
+
+	// Act
+	relPath, err := st.GetFolderByDriveID("folder-drive-id")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("GetFolderByDriveID: %v", err)
+	}
+	if relPath != "notes/work" {
+		t.Errorf("want %q, got %q", "notes/work", relPath)
+	}
+}
+
+func TestState_GetFolderByDriveID_ReturnsEmptyWhenNotFound(t *testing.T) {
+	// Arrange
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+
+	// Act
+	relPath, err := st.GetFolderByDriveID("unknown-id")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("GetFolderByDriveID: %v", err)
+	}
+	if relPath != "" {
+		t.Errorf("want empty, got %q", relPath)
+	}
+}
+
+func TestState_GetFileByDriveID_ReturnsRelPathAfterSetFile(t *testing.T) {
+	// Arrange
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+	_ = st.SetFile("notes/todo.md", drivesync.FileEntry{DriveID: "file-drive-id"})
+
+	// Act
+	relPath, err := st.GetFileByDriveID("file-drive-id")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("GetFileByDriveID: %v", err)
+	}
+	if relPath != "notes/todo.md" {
+		t.Errorf("want %q, got %q", "notes/todo.md", relPath)
+	}
+}
+
+func TestState_GetFileByDriveID_ReturnsEmptyWhenNotFound(t *testing.T) {
+	// Arrange
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+
+	// Act
+	relPath, err := st.GetFileByDriveID("unknown-id")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("GetFileByDriveID: %v", err)
+	}
+	if relPath != "" {
+		t.Errorf("want empty, got %q", relPath)
+	}
+}
+
 // --- LastVaultSync / LastError ---
 
 func TestState_SetLastVaultSync_CanBeRetrieved(t *testing.T) {
