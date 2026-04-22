@@ -15,8 +15,8 @@ dream:
   start_hour_utc: 19
   end_hour_utc: 23
 drive_sync:
-  enabled: true
-  root_folder_name: autowiki-local    # parent folder in My Drive
-  # vault_folder_name: vault      # vault subfolder under root
-  # poll_interval_secs: 60
-  # conflict_strategy: last_write_wins
+  enabled: ${DRIVE_SYNC_ENABLED}
+  root_folder_name: ${DRIVE_SYNC_ROOT_FOLDER}
+  vault_folder_name: ${DRIVE_SYNC_VAULT_FOLDER}
+  poll_interval_secs: ${DRIVE_SYNC_POLL_INTERVAL_SECS}
+  conflict_strategy: ${DRIVE_SYNC_CONFLICT_STRATEGY}

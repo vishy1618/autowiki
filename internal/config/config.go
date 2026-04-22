@@ -63,6 +63,10 @@ func Load(path string) (*Config, error) {
 		port := os.Getenv("PORT")
 		os.Setenv("BASE_URL", "http://localhost:"+port)
 	}
+	// Default numeric drive_sync fields so empty env vars don't break YAML int parsing.
+	if os.Getenv("DRIVE_SYNC_POLL_INTERVAL_SECS") == "" {
+		os.Setenv("DRIVE_SYNC_POLL_INTERVAL_SECS", "60")
+	}
 
 	expanded := os.ExpandEnv(string(data))
 
