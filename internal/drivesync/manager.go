@@ -20,13 +20,14 @@ import (
 )
 
 type syncJob struct {
-	relPath     string
-	localPath   string
-	parentID    string
-	isTrash     bool
-	driveID     string // set for trash jobs
-	download    bool   // set for download jobs
-	driveFileID string // set for download jobs
+	relPath      string
+	localPath    string
+	parentID     string
+	isTrash      bool
+	driveID      string // set for trash jobs
+	download     bool   // set for download jobs
+	driveFileID  string // set for download jobs
+	driveModTime string // RFC3339; set for download jobs (conflict resolution)
 }
 
 // SyncManager orchestrates vault→Drive upload. Constructed via New().
@@ -149,7 +150,7 @@ func (sm *SyncManager) Start(ctx context.Context) {
 	bgCtx, bgCancel := context.WithCancel(ctx)
 	sm.bgCancel = bgCancel
 
-	sm.reconcileUpload(bgCtx)
+	sm.reconcile(bgCtx)
 
 	sm.startPoller(bgCtx)
 
@@ -173,19 +174,19 @@ func (sm *SyncManager) Start(ctx context.Context) {
 	}()
 }
 
-// ReconcileUpload walks the vault and uploads any files not yet tracked in State.
-// It is a no-op if the DriveClient is not connected. Idempotent: safe to call again
-// after a partial failure.
-func (sm *SyncManager) ReconcileUpload(ctx context.Context) {
+// Reconcile walks the vault, uploads local-only files, and downloads Drive-only
+// files. It is a no-op if the DriveClient is not connected. Idempotent: safe to
+// call again after a partial failure.
+func (sm *SyncManager) Reconcile(ctx context.Context) {
 	if sm.driveClient == nil {
 		slog.Warn("drive sync: not connected, skipping reconcile")
 		return
 	}
 	sm.startWorkerOnce()
-	sm.reconcileUpload(ctx)
+	sm.reconcile(ctx)
 }
 
-func (sm *SyncManager) reconcileUpload(ctx context.Context) {
+func (sm *SyncManager) reconcile(ctx context.Context) {
 	vaultFolderID := sm.vaultFolderID
 	if vaultFolderID == "" {
 		var err error
@@ -240,6 +241,28 @@ func (sm *SyncManager) reconcileUpload(ctx context.Context) {
 	if err != nil {
 		slog.Error("drive sync: walking vault", "err", err)
 	}
+
+	// Download Drive-only files: present in Drive but absent from State.
+	if vaultFolderID != "" {
+		driveFiles, err := sm.driveClient.ListFolder(vaultFolderID)
+		if err != nil {
+			slog.Error("drive sync: listing Drive folder for reconcile", "err", err)
+		} else {
+			for _, df := range driveFiles {
+				if ctx.Err() != nil {
+					break
+				}
+				existing, err := sm.state.GetFile(df.RelPath)
+				if err != nil || existing != nil {
+					continue // already tracked — skip
+				}
+				localPath := filepath.Join(sm.vaultPath, filepath.FromSlash(df.RelPath))
+				slog.Info("drive sync: queuing reconcile download", "path", df.RelPath, "driveID", df.ID)
+				sm.syncCh <- syncJob{download: true, relPath: df.RelPath, driveFileID: df.ID, localPath: localPath, driveModTime: df.ModifiedTime}
+			}
+		}
+	}
+
 	slog.Info("drive sync: reconcile complete")
 }
 
@@ -389,7 +412,7 @@ func (sm *SyncManager) processChange(ctx context.Context, change DriveChange) {
 
 	localPath := filepath.Join(sm.vaultPath, filepath.FromSlash(relPath))
 	slog.Info("drive sync: queuing download from Drive", "path", relPath, "driveID", change.FileID)
-	sm.syncCh <- syncJob{download: true, relPath: relPath, driveFileID: change.FileID, localPath: localPath}
+	sm.syncCh <- syncJob{download: true, relPath: relPath, driveFileID: change.FileID, localPath: localPath, driveModTime: change.ModifiedTime}
 }
 
 // resolveRelPath derives the vault-relative path for a Drive change.
@@ -420,6 +443,30 @@ func (sm *SyncManager) startWorkerOnce() {
 
 func (sm *SyncManager) processJob(job syncJob) {
 	if job.download {
+		// Conflict resolution: if local file exists, decide which side wins.
+		if info, err := os.Stat(job.localPath); err == nil {
+			var driveModTime time.Time
+			if job.driveModTime != "" {
+				driveModTime, _ = time.Parse(time.RFC3339, job.driveModTime)
+			}
+			decision := Resolve(info.ModTime(), driveModTime, sm.cfg.ConflictStrategy)
+			if decision.Winner == "local" {
+				slog.Info("drive sync: download skipped — local file is newer", "path", job.relPath)
+				return
+			}
+			if decision.ConflictPath != "" {
+				// Rename local to conflict path before overwriting.
+				ext := filepath.Ext(job.localPath)
+				stem := job.localPath[:len(job.localPath)-len(ext)]
+				conflictLocal := stem + "." + decision.ConflictPath + ext
+				if err := os.Rename(job.localPath, conflictLocal); err != nil {
+					slog.Error("drive sync: renaming local file to conflict path", "path", job.relPath, "err", err)
+				} else {
+					slog.Info("drive sync: conflict file created", "path", filepath.Base(conflictLocal))
+				}
+			}
+		}
+
 		// Mark as pending before writing so handleFileEvent can suppress the echo.
 		// Only needed when the watcher is running; during reconcile there is no watcher yet.
 		if sm.watcher != nil {
@@ -431,7 +478,7 @@ func (sm *SyncManager) processJob(job syncJob) {
 			_ = sm.state.SetLastError(err.Error())
 			return
 		}
-		entry := FileEntry{DriveID: job.driveFileID, LocalModTime: time.Now().UTC().Format(time.RFC3339)}
+		entry := FileEntry{DriveID: job.driveFileID, DriveModTime: job.driveModTime, LocalModTime: time.Now().UTC().Format(time.RFC3339)}
 		if err := sm.state.SetFile(job.relPath, entry); err != nil {
 			slog.Error("drive sync: storing file state after download", "path", job.relPath, "err", err)
 		}

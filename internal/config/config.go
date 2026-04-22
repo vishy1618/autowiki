@@ -33,12 +33,19 @@ type DreamConfig struct {
 	EndHourUTC   int  `yaml:"end_hour_utc"`
 }
 
+type ConflictStrategy string
+
+const (
+	ConflictLastWriteWins ConflictStrategy = "last_write_wins"
+	ConflictKeepBoth      ConflictStrategy = "keep_both"
+)
+
 type DriveSyncConfig struct {
-	Enabled          bool   `yaml:"enabled"`
-	RootFolderName   string `yaml:"root_folder_name"`
-	VaultFolderName  string `yaml:"vault_folder_name"`
-	PollIntervalSecs int    `yaml:"poll_interval_secs"`
-	ConflictStrategy string `yaml:"conflict_strategy"`
+	Enabled          bool             `yaml:"enabled"`
+	RootFolderName   string           `yaml:"root_folder_name"`
+	VaultFolderName  string           `yaml:"vault_folder_name"`
+	PollIntervalSecs int              `yaml:"poll_interval_secs"`
+	ConflictStrategy ConflictStrategy `yaml:"conflict_strategy"`
 }
 
 func Load(path string) (*Config, error) {
@@ -94,7 +101,7 @@ func (c *Config) validate() error {
 		c.DriveSync.PollIntervalSecs = 60
 	}
 	if c.DriveSync.ConflictStrategy == "" {
-		c.DriveSync.ConflictStrategy = "last_write_wins"
+		c.DriveSync.ConflictStrategy = ConflictLastWriteWins
 	}
 	if c.VaultPath == "" {
 		return fmt.Errorf("VAULT_PATH is required")

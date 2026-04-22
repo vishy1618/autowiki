@@ -63,8 +63,8 @@ func TestLogin_WithDriveSync_IncludesDriveScopeAndOfflineAccess(t *testing.T) {
 
 	// Assert
 	loc := w.Result().Header.Get("Location")
-	if !strings.Contains(loc, "drive.file") {
-		t.Errorf("Login URL missing drive.file scope: %q", loc)
+	if !strings.Contains(loc, "auth%2Fdrive") {
+		t.Errorf("Login URL missing drive scope: %q", loc)
 	}
 	if !strings.Contains(loc, "access_type=offline") {
 		t.Errorf("Login URL missing access_type=offline: %q", loc)
@@ -90,8 +90,8 @@ func TestLogin_WithoutDriveSync_OmitsDriveScopeAndOnlineAccess(t *testing.T) {
 
 	// Assert
 	loc := w.Result().Header.Get("Location")
-	if strings.Contains(loc, "drive.file") {
-		t.Errorf("Login URL should not contain drive.file scope: %q", loc)
+	if strings.Contains(loc, "auth%2Fdrive") {
+		t.Errorf("Login URL should not contain drive scope: %q", loc)
 	}
 	if strings.Contains(loc, "access_type=offline") {
 		t.Errorf("Login URL should not contain access_type=offline: %q", loc)

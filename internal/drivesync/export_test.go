@@ -23,13 +23,14 @@ func ResolveRelPathForTest(sm *SyncManager, change DriveChange) (string, bool) {
 }
 
 // EnqueueDownloadForTest injects a download job directly into the sync worker channel.
-func EnqueueDownloadForTest(sm *SyncManager, relPath, driveFileID, vaultPath string) {
+// driveModTime is the RFC3339 modifiedTime from Drive (used for conflict resolution).
+func EnqueueDownloadForTest(sm *SyncManager, relPath, driveFileID, vaultPath, driveModTime string) {
 	localPath := filepath.Join(vaultPath, relPath)
-	sm.syncCh <- syncJob{download: true, relPath: relPath, driveFileID: driveFileID, localPath: localPath}
+	sm.syncCh <- syncJob{download: true, relPath: relPath, driveFileID: driveFileID, localPath: localPath, driveModTime: driveModTime}
 }
 
 // EnqueueTrashForTest injects a trash job directly into the upload worker channel.
-// Only valid after the worker has been started (e.g. via ReconcileUpload or Start).
+// Only valid after the worker has been started (e.g. via Reconcile or Start).
 func EnqueueTrashForTest(sm *SyncManager, relPath, driveID string) {
 	sm.syncCh <- syncJob{isTrash: true, relPath: relPath, driveID: driveID}
 }

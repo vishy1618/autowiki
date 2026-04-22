@@ -60,7 +60,7 @@ func TestSyncManager_Poller_DownloadsNewDriveFileAndUpdatesPageToken(t *testing.
 	drivesync.SetVaultFolderIDForTest(sm, "vault-root-id")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sm.ReconcileUpload(ctx) // start worker
+	sm.Reconcile(ctx) // start worker
 
 	// Act — run one poll cycle.
 	drivesync.PollOnceForTest(sm, ctx)
@@ -201,7 +201,7 @@ func TestSyncManager_Poller_RetriesOnceAfterTransientError(t *testing.T) {
 	drivesync.SetVaultFolderIDForTest(sm, "vault-root-id")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sm.ReconcileUpload(ctx)
+	sm.Reconcile(ctx)
 
 	// Act
 	drivesync.PollOnceForTest(sm, ctx)
@@ -220,6 +220,78 @@ func TestSyncManager_Poller_RetriesOnceAfterTransientError(t *testing.T) {
 	// Assert — two calls were made to /drive/v3/changes.
 	if callCount != 2 {
 		t.Errorf("expected 2 ListChanges calls (1 failure + 1 retry), got %d", callCount)
+	}
+}
+
+func TestSyncManager_Poller_DoesNotReDownloadAfterSuccessfulDownload(t *testing.T) {
+	// Arrange — first poll downloads a file; second poll reports the same modifiedTime.
+	// Drive modtime is far in the future so conflict resolution always favours Drive
+	// (local can never be "newer"). Only the DriveModTime stored in state after the
+	// first download can prevent the second download.
+	vaultDir := t.TempDir()
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+	_ = st.SetPageToken("tok-1")
+	_ = st.SetRootFolderID("vault-root-id")
+
+	const driveModTime = "2099-01-01T00:00:00Z" // far future — local is always older
+	downloadCount := 0
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/changes": func(w http.ResponseWriter, r *http.Request) {
+			tok := r.URL.Query().Get("pageToken")
+			nextTok := map[string]string{"tok-1": "tok-2", "tok-2": "tok-3"}[tok]
+			if nextTok == "" {
+				nextTok = tok
+			}
+			jsonResponse(w, map[string]any{
+				"newStartPageToken": nextTok,
+				"changes": []map[string]any{{
+					"fileId":  "drive-file-id",
+					"removed": false,
+					"file": map[string]any{
+						"name":         "notes.md",
+						"parents":      []string{"vault-root-id"},
+						"modifiedTime": driveModTime,
+					},
+				}},
+			})
+		},
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("alt") == "media" {
+				downloadCount++
+				w.Write([]byte("content"))
+				return
+			}
+			jsonResponse(w, map[string]any{"files": []any{}})
+		},
+	})
+	defer srv.Close()
+
+	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
+	drivesync.SetVaultFolderIDForTest(sm, "vault-root-id")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sm.Reconcile(ctx)
+
+	// Act — two poll cycles with the same Drive change.
+	drivesync.PollOnceForTest(sm, ctx)
+	drivesync.PollOnceForTest(sm, ctx)
+	cancel()
+	sm.Shutdown()
+
+	// Assert — file downloaded exactly once; state records the DriveModTime.
+	if downloadCount != 1 {
+		t.Errorf("expected 1 download, got %d", downloadCount)
+	}
+	entry, err := st.GetFile("notes.md")
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected notes.md in state")
+	}
+	if entry.DriveModTime != driveModTime {
+		t.Errorf("DriveModTime: want %q, got %q", driveModTime, entry.DriveModTime)
 	}
 }
 
@@ -265,7 +337,7 @@ func TestSyncManager_Poller_SkipsDownloadWhenDriveModTimeMatchesState(t *testing
 	drivesync.SetVaultFolderIDForTest(sm, "vault-root-id")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sm.ReconcileUpload(ctx)
+	sm.Reconcile(ctx)
 	drivesync.PollOnceForTest(sm, ctx)
 	cancel()
 	sm.Shutdown()
@@ -312,7 +384,7 @@ func TestSyncManager_Poller_DeletesLocalFileWhenDriveChangeIsRemoval(t *testing.
 	drivesync.SetVaultFolderIDForTest(sm, "vault-root-id")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sm.ReconcileUpload(ctx)
+	sm.Reconcile(ctx)
 
 	// Act
 	drivesync.PollOnceForTest(sm, ctx)
@@ -358,8 +430,8 @@ func TestSyncManager_DownloadJob_WritesFileAndUpdatesState(t *testing.T) {
 	defer srv.Close()
 
 	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
-	sm.ReconcileUpload(context.Background()) // starts worker on empty vault
-	drivesync.EnqueueDownloadForTest(sm, "notes.md", "drive-file-id", vaultDir)
+	sm.Reconcile(context.Background()) // starts worker on empty vault
+	drivesync.EnqueueDownloadForTest(sm, "notes.md", "drive-file-id", vaultDir, "")
 	sm.Shutdown()
 
 	// Assert — file written to disk.
@@ -509,7 +581,7 @@ func TestSyncManager_Start_CreatesVaultFolderUnderRoot(t *testing.T) {
 	}
 }
 
-func TestSyncManager_ReconcileUpload_UploadsLocalOnlyFiles(t *testing.T) {
+func TestSyncManager_Reconcile_UploadsLocalOnlyFiles(t *testing.T) {
 	// Arrange — vault has two files; state already tracks one.
 	vaultDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(vaultDir, "notes.md"), []byte("hi"), 0644); err != nil {
@@ -538,7 +610,7 @@ func TestSyncManager_ReconcileUpload_UploadsLocalOnlyFiles(t *testing.T) {
 	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
 
 	// Act
-	sm.ReconcileUpload(context.Background())
+	sm.Reconcile(context.Background())
 	sm.Shutdown()
 
 	// Assert — only todo.md was uploaded (notes.md was in state already).
@@ -559,6 +631,225 @@ func TestSyncManager_ReconcileUpload_UploadsLocalOnlyFiles(t *testing.T) {
 	}
 }
 
+func TestSyncManager_Reconcile_DownloadsDriveOnlyFiles(t *testing.T) {
+	// Arrange — Drive has a file; no local copy and no State entry.
+	// Reconcile should download it.
+	vaultDir := t.TempDir()
+	db := openTestPebble(t)
+	_ = drivesync.NewState(db)
+
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Query().Get("alt") == "media":
+				w.Write([]byte("from drive"))
+			case r.Method == http.MethodGet && r.URL.Query().Get("q") != "":
+				// ListFolder — return one file under the vault folder.
+				jsonResponse(w, map[string]any{
+					"files": []map[string]any{
+						{
+							"id":           "drive-only-id",
+							"name":         "drive-only.md",
+							"mimeType":     "text/plain",
+							"modifiedTime": "2024-06-01T10:00:00Z",
+							"md5Checksum":  "abc123",
+						},
+					},
+				})
+			default:
+				// Folder creation / other GETs.
+				jsonResponse(w, map[string]any{"id": "vault-folder-id", "files": []any{}})
+			}
+		},
+	})
+	defer srv.Close()
+
+	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
+	drivesync.SetVaultFolderIDForTest(sm, "vault-folder-id")
+
+	// Act
+	sm.Reconcile(context.Background())
+	sm.Shutdown()
+
+	// Assert — Drive-only file downloaded to local vault.
+	content, err := os.ReadFile(filepath.Join(vaultDir, "drive-only.md"))
+	if err != nil {
+		t.Fatalf("reading downloaded file: %v", err)
+	}
+	if string(content) != "from drive" {
+		t.Errorf("want %q, got %q", "from drive", string(content))
+	}
+}
+
+func TestSyncManager_Reconcile_SkipsDownloadForFilesAlreadyInState(t *testing.T) {
+	// Arrange — Drive has a file that is already tracked in State.
+	// Reconcile should neither re-upload nor re-download it.
+	vaultDir := t.TempDir()
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+	_ = st.SetFile("already-synced.md", drivesync.FileEntry{DriveID: "drive-synced-id"})
+
+	downloadCalled := false
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("alt") == "media" {
+				downloadCalled = true
+				w.Write([]byte("should not download"))
+				return
+			}
+			if r.Method == http.MethodGet && r.URL.Query().Get("q") != "" {
+				jsonResponse(w, map[string]any{
+					"files": []map[string]any{
+						{
+							"id":           "drive-synced-id",
+							"name":         "already-synced.md",
+							"mimeType":     "text/plain",
+							"modifiedTime": "2024-06-01T10:00:00Z",
+							"md5Checksum":  "abc",
+						},
+					},
+				})
+				return
+			}
+			jsonResponse(w, map[string]any{"id": "vault-folder-id", "files": []any{}})
+		},
+	})
+	defer srv.Close()
+
+	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
+	drivesync.SetVaultFolderIDForTest(sm, "vault-folder-id")
+
+	// Act
+	sm.Reconcile(context.Background())
+	sm.Shutdown()
+
+	// Assert — no download attempted.
+	if downloadCalled {
+		t.Error("expected no download for file already tracked in state")
+	}
+}
+
+func TestSyncManager_DownloadJob_SkipsWhenLocalWins(t *testing.T) {
+	// Arrange — local file is newer; last_write_wins should keep local and skip download.
+	vaultDir := t.TempDir()
+	localFile := filepath.Join(vaultDir, "notes.md")
+	if err := os.WriteFile(localFile, []byte("local content"), 0644); err != nil {
+		t.Fatalf("writing local file: %v", err)
+	}
+	// Set local mod time to be 10 s in the future relative to Drive.
+	driveTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	localTime := driveTime.Add(10 * time.Second)
+	if err := os.Chtimes(localFile, localTime, localTime); err != nil {
+		t.Fatalf("setting local mod time: %v", err)
+	}
+
+	downloadCalled := false
+	db := openTestPebble(t)
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("alt") == "media" {
+				downloadCalled = true
+				w.Write([]byte("drive content"))
+				return
+			}
+			jsonResponse(w, map[string]any{"files": []any{}})
+		},
+	})
+	defer srv.Close()
+
+	cfg := config.DriveSyncConfig{
+		RootFolderName:   "autowiki",
+		VaultFolderName:  "vault",
+		ConflictStrategy: config.ConflictLastWriteWins,
+	}
+	sm := drivesync.NewWithHTTPClient(cfg, db, vaultDir, httpClient)
+	sm.Reconcile(context.Background()) // start worker
+	drivesync.EnqueueDownloadForTest(sm, "notes.md", "drive-file-id", vaultDir,
+		driveTime.Format(time.RFC3339))
+	sm.Shutdown()
+
+	// Assert — local file untouched; download not called.
+	if downloadCalled {
+		t.Error("expected download to be skipped when local is newer")
+	}
+	content, err := os.ReadFile(localFile)
+	if err != nil {
+		t.Fatalf("reading local file: %v", err)
+	}
+	if string(content) != "local content" {
+		t.Errorf("local file should be unchanged, got %q", string(content))
+	}
+}
+
+func TestSyncManager_DownloadJob_RenamesLocalAndDownloadsOnConflict(t *testing.T) {
+	// Arrange — both sides modified within 5 s (keep_both); Drive content should win
+	// and the local file should be renamed to a conflict path.
+	vaultDir := t.TempDir()
+	localFile := filepath.Join(vaultDir, "notes.md")
+	if err := os.WriteFile(localFile, []byte("local content"), 0644); err != nil {
+		t.Fatalf("writing local file: %v", err)
+	}
+	driveTime := time.Date(2024, 1, 1, 12, 0, 3, 0, time.UTC) // 3 s after local
+	localTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(localFile, localTime, localTime); err != nil {
+		t.Fatalf("setting local mod time: %v", err)
+	}
+
+	db := openTestPebble(t)
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("alt") == "media" {
+				w.Write([]byte("drive content"))
+				return
+			}
+			jsonResponse(w, map[string]any{"files": []any{}})
+		},
+	})
+	defer srv.Close()
+
+	cfg := config.DriveSyncConfig{
+		RootFolderName:   "autowiki",
+		VaultFolderName:  "vault",
+		ConflictStrategy: config.ConflictKeepBoth,
+	}
+	sm := drivesync.NewWithHTTPClient(cfg, db, vaultDir, httpClient)
+	sm.Reconcile(context.Background())
+	drivesync.EnqueueDownloadForTest(sm, "notes.md", "drive-file-id", vaultDir,
+		driveTime.Format(time.RFC3339))
+	sm.Shutdown()
+
+	// Assert — Drive content written to notes.md.
+	content, err := os.ReadFile(localFile)
+	if err != nil {
+		t.Fatalf("reading notes.md: %v", err)
+	}
+	if string(content) != "drive content" {
+		t.Errorf("want drive content in notes.md, got %q", string(content))
+	}
+
+	// Assert — conflict file created with local content.
+	entries, err := os.ReadDir(vaultDir)
+	if err != nil {
+		t.Fatalf("reading vaultDir: %v", err)
+	}
+	var conflictFile string
+	for _, e := range entries {
+		if e.Name() != "notes.md" {
+			conflictFile = e.Name()
+		}
+	}
+	if conflictFile == "" {
+		t.Fatal("expected a conflict file to be created")
+	}
+	conflictContent, err := os.ReadFile(filepath.Join(vaultDir, conflictFile))
+	if err != nil {
+		t.Fatalf("reading conflict file: %v", err)
+	}
+	if string(conflictContent) != "local content" {
+		t.Errorf("conflict file should contain local content, got %q", string(conflictContent))
+	}
+}
+
 func TestSyncManager_UploadWorker_ProcessesTrashJobAndRemovesStateEntry(t *testing.T) {
 	// Arrange — state has a file; worker should remove it after trashing.
 	db := openTestPebble(t)
@@ -574,7 +865,7 @@ func TestSyncManager_UploadWorker_ProcessesTrashJobAndRemovesStateEntry(t *testi
 	defer srv.Close()
 
 	sm := drivesync.NewWithHTTPClient(testCfg, db, t.TempDir(), httpClient)
-	sm.ReconcileUpload(context.Background()) // starts worker on empty vault
+	sm.Reconcile(context.Background()) // starts worker on empty vault
 	drivesync.EnqueueTrashForTest(sm, "old.md", "drive-id-old")
 	sm.Shutdown()
 
@@ -623,7 +914,7 @@ func TestSyncManager_UploadWorker_RecordsErrorAndContinuesOnUploadFailure(t *tes
 	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
 
 	// Act
-	sm.ReconcileUpload(context.Background())
+	sm.Reconcile(context.Background())
 	sm.Shutdown()
 
 	// Assert — zzz.md is in state (worker continued after aaa.md failed).
@@ -659,7 +950,7 @@ func TestSyncManager_UploadWorker_SetsLastErrorOnFailure(t *testing.T) {
 	defer srv.Close()
 
 	sm := drivesync.NewWithHTTPClient(testCfg, db, t.TempDir(), httpClient)
-	sm.ReconcileUpload(context.Background()) // starts worker on empty vault
+	sm.Reconcile(context.Background()) // starts worker on empty vault
 	drivesync.EnqueueTrashForTest(sm, "bad.md", "bad-drive-id")
 	sm.Shutdown()
 
@@ -803,7 +1094,7 @@ func TestSyncManager_Start_PreservesExistingPageToken(t *testing.T) {
 	}
 }
 
-func TestSyncManager_ReconcileUpload_SkipsFilesAlreadyInState(t *testing.T) {
+func TestSyncManager_Reconcile_SkipsUploadForFilesAlreadyInState(t *testing.T) {
 	// Arrange — vault has one file and it's already in state.
 	vaultDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(vaultDir, "existing.md"), []byte("x"), 0644); err != nil {
@@ -826,7 +1117,7 @@ func TestSyncManager_ReconcileUpload_SkipsFilesAlreadyInState(t *testing.T) {
 	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
 
 	// Act
-	sm.ReconcileUpload(context.Background())
+	sm.Reconcile(context.Background())
 	sm.Shutdown()
 
 	// Assert — no upload API calls made.
