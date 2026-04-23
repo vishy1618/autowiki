@@ -13,6 +13,46 @@ Inspired by [Andrej Karpathy's LLM Wiki pattern](https://x.com/karpathy/status/1
 - **Ask questions** — Claude searches your vault to answer from what you've already saved
 - **Chat history** — infinite-scroll timeline across all past sessions
 - **Nightly consolidation** — a "dream state" goroutine runs in a configurable UTC window (default 19–23 UTC ≈ 1–5 am IST) to reorganise and cross-link the vault
+- **Google Drive sync** — bidirectional sync keeps your vault backed up to Drive; status pill in the header shows live sync state
+
+## Google Drive sync
+
+Drive sync is optional. When enabled, autowiki keeps a full copy of your Obsidian vault in Google Drive and syncs changes bidirectionally.
+
+### How it works
+
+- On startup, `SyncManager` uploads any local vault files not yet in Drive (initial reconcile).
+- A file-system watcher (2 s debounce) uploads new or modified vault files as they change.
+- A poller (default every 60 s) fetches Drive changes and downloads anything added from another device.
+- Conflict resolution: if both sides changed within 5 s, behaviour depends on `DRIVE_SYNC_CONFLICT_STRATEGY`:
+  - `last_write_wins` (default) — the newer file wins.
+  - `keep_both` — the older version is renamed to a `.conflict.YYYYMMDDHHMMSS` file and the newer one is written.
+- The header shows a live status pill (green / amber / red) with a popover for details.
+
+### Google Cloud setup
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com) and create a project (or reuse the one for OAuth sign-in).
+2. Enable the **Google Drive API** for the project.
+3. Under **OAuth consent screen**, add your email as a test user (required while the app is in testing mode).
+4. Under **Credentials → OAuth 2.0 Client IDs**, ensure `https://your-domain/api/auth/callback` is in the authorised redirect URIs. The same client ID and secret used for sign-in are reused — no second credential needed.
+
+### Configuration
+
+Set these environment variables (see `.env.example`):
+
+```
+DRIVE_SYNC_ENABLED=true
+DRIVE_SYNC_ROOT_FOLDER=autowiki          # top-level Drive folder name
+DRIVE_SYNC_VAULT_FOLDER=vault            # subfolder inside root for vault files
+DRIVE_SYNC_POLL_INTERVAL_SECS=60         # optional, default 60
+DRIVE_SYNC_CONFLICT_STRATEGY=last_write_wins  # or keep_both
+```
+
+### First sign-in
+
+On the first sign-in after enabling Drive sync, Google shows a consent screen asking for Drive access. A refresh token is stored in Pebble and reused for all subsequent syncs — you only need to re-consent if you revoke access from your Google account settings.
+
+If the server starts before a token exists (e.g. fresh deployment), sync begins automatically as soon as you sign in — no restart required.
 
 ## Stack
 

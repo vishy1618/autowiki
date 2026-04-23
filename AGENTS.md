@@ -32,6 +32,7 @@ internal/vault/             Obsidian vault read/write
 internal/llm/               Claude API client
 internal/store/             Pebble — chat history + auth sessions
 internal/dream/             Nightly curation goroutine
+internal/drivesync/         Google Drive bidirectional sync
 web/                        Remix SPA source
 public/                     Built Remix output (served by Go, gitignored)
 blueprint/                  PRD, TRD, user stories
@@ -50,6 +51,13 @@ GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 ALLOWED_EMAIL           single whitelisted email for Google sign-in
 SESSION_SECRET          random base64 string for signing cookies
+
+# Drive sync (optional)
+DRIVE_SYNC_ENABLED              set to "true" to enable
+DRIVE_SYNC_ROOT_FOLDER          top-level Drive folder (default: autowiki)
+DRIVE_SYNC_VAULT_FOLDER         subfolder inside root for vault files (default: vault)
+DRIVE_SYNC_POLL_INTERVAL_SECS   how often to poll Drive for changes (default: 60)
+DRIVE_SYNC_CONFLICT_STRATEGY    last_write_wins (default) or keep_both
 ```
 
 ## Build & Dev
@@ -67,6 +75,7 @@ make dev-server   # Go server in --dev mode (proxies non-/api to port 5173)
 - **Vault writes are automatic** — the LLM judges whether each message warrants a write. It may write nothing at all (e.g. for greetings or pure queries).
 - **Dream state** is a goroutine that wakes between 1–5am IST nightly to reorganise the vault. It runs at most once per night and logs changes to `log.md`.
 - **The Obsidian vault lives outside the repo** at `VAULT_PATH`. `internal/vault` is Go code, not vault data.
+- **Drive sync** (`internal/drivesync`) is fully optional. `SyncManager` is only created when `DRIVE_SYNC_ENABLED=true`. It uses the same Google OAuth client as auth — the sign-in flow requests the `drive` scope with `access_type=offline&prompt=consent` to guarantee a refresh token. The token is stored in Pebble via `DriveTokenStore`. If no token exists at startup (first deployment), `SyncManager.Start()` spawns a background goroutine that retries every 30 s; the full pipeline starts automatically once the user signs in, with no server restart required. Conflict resolution is a pure function in `conflict.go` — no side effects, fully unit-tested.
 
 ## Commit Conventions
 
