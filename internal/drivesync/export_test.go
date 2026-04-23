@@ -2,6 +2,7 @@ package drivesync
 
 import (
 	"context"
+	"net/http"
 	"path/filepath"
 	"time"
 
@@ -62,4 +63,16 @@ func NewWithTokenStore(db *pebble.DB, tokenStore store.DriveTokenStore) *SyncMan
 		tokenStore: tokenStore,
 		syncCh:     make(chan syncJob, 1),
 	}
+}
+
+// SetTokenRetryIntervalForTest overrides the interval used by the no-token retry loop.
+// Call before Start().
+func SetTokenRetryIntervalForTest(sm *SyncManager, d time.Duration) {
+	sm.tokenRetryInterval = d
+}
+
+// SetHTTPClientFactoryForTest injects a custom HTTP client factory, bypassing OAuth.
+// The factory receives the refresh token and returns a pre-configured *http.Client.
+func SetHTTPClientFactoryForTest(sm *SyncManager, factory func(context.Context, string) *http.Client) {
+	sm.httpClientFactory = factory
 }

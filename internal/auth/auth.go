@@ -130,7 +130,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if h.driveTokenStore != nil {
 		accessType = oauth2.AccessTypeOffline
 	}
-	url := h.oauthCfg.AuthCodeURL(state, accessType)
+	opts := []oauth2.AuthCodeOption{accessType}
+	if h.driveTokenStore != nil {
+		opts = append(opts, oauth2.SetAuthURLParam("prompt", "consent"))
+	}
+	url := h.oauthCfg.AuthCodeURL(state, opts...)
 	http.Redirect(w, r, url, http.StatusFound)
 }
 

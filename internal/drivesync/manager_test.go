@@ -517,12 +517,72 @@ func TestSyncManager_ResolveRelPath_ReturnsFalseWhenParentUnknown(t *testing.T) 
 }
 
 func TestSyncManager_Start_NoOpWhenNoRefreshToken(t *testing.T) {
-	// Arrange — token store has no token; driveClient will be nil until token found.
+	// Arrange — token store has no token; Start must return without blocking.
 	ts := store.NewMemStore()
 	sm := drivesync.New(testCfg, "client-id", "client-secret", openTestPebble(t), t.TempDir(), ts)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Act — must return without error or panic.
-	sm.Start(context.Background())
+	// Act — must return without error or panic (retry goroutine is spawned in background).
+	sm.Start(ctx)
+}
+
+func TestSyncManager_Start_RetriesWhenTokenBecomesAvailable(t *testing.T) {
+	// Arrange — no token initially; fake Drive handles folder creation and page token.
+	vaultDir := t.TempDir()
+	db := openTestPebble(t)
+	ts := store.NewMemStore()
+
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				jsonResponse(w, map[string]any{"id": "folder-id"})
+				return
+			}
+			jsonResponse(w, map[string]any{"files": []any{}})
+		},
+		"/drive/v3/changes/startPageToken": func(w http.ResponseWriter, _ *http.Request) {
+			jsonResponse(w, map[string]any{"startPageToken": "start-tok"})
+		},
+	})
+	defer srv.Close()
+
+	sm := drivesync.New(testCfg, "client-id", "client-secret", db, vaultDir, ts)
+	drivesync.SetTokenRetryIntervalForTest(sm, 10*time.Millisecond)
+	drivesync.SetHTTPClientFactoryForTest(sm, func(_ context.Context, _ string) *http.Client {
+		return httpClient
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sm.Start(ctx)
+	defer sm.Shutdown()
+
+	// Assert — startup has not happened yet (no page token).
+	time.Sleep(30 * time.Millisecond)
+	st := drivesync.NewState(db)
+	tok, _ := st.GetPageToken()
+	if tok != "" {
+		t.Fatal("expected no page token before Drive token is stored")
+	}
+
+	// Act — store the Drive token.
+	if err := ts.SetDriveToken("fake-refresh-token"); err != nil {
+		t.Fatalf("SetDriveToken: %v", err)
+	}
+
+	// Assert — startup runs and page token is set within a reasonable time.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		tok, _ = st.GetPageToken()
+		if tok != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if tok == "" {
+		t.Error("expected page token to be set after Drive token was stored")
+	}
 }
 
 func TestSyncManager_Start_ReturnsWithoutPanicWhenDriveErrors(t *testing.T) {

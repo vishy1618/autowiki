@@ -71,6 +71,29 @@ func TestLogin_WithDriveSync_IncludesDriveScopeAndOfflineAccess(t *testing.T) {
 	}
 }
 
+func TestLogin_WithDriveSync_IncludesPromptConsent(t *testing.T) {
+	// Arrange
+	cfg := auth.Config{
+		GoogleClientID:     "client-id",
+		GoogleClientSecret: "client-secret",
+		AllowedEmail:       "allowed@example.com",
+		SessionSecret:      "supersecretvalue",
+		BaseURL:            "http://localhost:8080",
+	}
+	h := auth.NewHandler(cfg, store.NewMemStore(), store.NewMemStore())
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	// Act
+	h.Login(w, req)
+
+	// Assert
+	loc := w.Result().Header.Get("Location")
+	if !strings.Contains(loc, "prompt=consent") {
+		t.Errorf("Login URL missing prompt=consent: %q", loc)
+	}
+}
+
 func TestLogin_WithoutDriveSync_OmitsDriveScopeAndOnlineAccess(t *testing.T) {
 	// Arrange — nil DriveTokenStore means drive sync is disabled.
 	cfg := auth.Config{

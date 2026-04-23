@@ -32,22 +32,24 @@ type syncJob struct {
 
 // SyncManager orchestrates vault→Drive upload. Constructed via New().
 type SyncManager struct {
-	cfg             config.DriveSyncConfig
-	oauthCfg        *oauth2.Config
-	tokenStore      store.DriveTokenStore
-	driveClient     *DriveClient // nil until Start() builds it (or NewWithHTTPClient sets it)
-	state           *State
-	vaultPath       string
-	syncCh        chan syncJob
-	wg              sync.WaitGroup
-	workerOnce      sync.Once
-	shutdownOnce    sync.Once
-	watcher         *Watcher
-	watcherDone     chan struct{}
-	watcherDebounce time.Duration // 0 → use default (2s)
-	vaultFolderID    string     // cached after Start(); never changes during process lifetime
-	bgCancel         context.CancelFunc
-	pendingDownloads sync.Map  // relPath → struct{}; suppresses fsnotify echo after Drive download
+	cfg                config.DriveSyncConfig
+	oauthCfg           *oauth2.Config
+	tokenStore         store.DriveTokenStore
+	driveClient        *DriveClient // nil until Start() builds it (or NewWithHTTPClient sets it)
+	state              *State
+	vaultPath          string
+	syncCh             chan syncJob
+	wg                 sync.WaitGroup
+	workerOnce         sync.Once
+	shutdownOnce       sync.Once
+	watcher            *Watcher
+	watcherDone        chan struct{}
+	watcherDebounce    time.Duration // 0 → use default (2s)
+	tokenRetryInterval time.Duration // 0 → use default (30s)
+	httpClientFactory  func(context.Context, string) *http.Client // nil → use buildHTTPClient
+	vaultFolderID      string        // cached after Start(); never changes during process lifetime
+	bgCancel           context.CancelFunc
+	pendingDownloads   sync.Map // relPath → struct{}; suppresses fsnotify echo after Drive download
 }
 
 // New returns a SyncManager ready to Start. The DriveClient is built lazily
@@ -85,9 +87,10 @@ func NewWithHTTPClient(cfg config.DriveSyncConfig, db *pebble.DB, vaultPath stri
 	}
 }
 
-// Start checks for a stored refresh token if no DriveClient is set yet; if
-// absent it logs and returns. Otherwise it creates the vault Drive folder,
-// stores sync metadata, runs initial reconciliation, and launches the upload worker.
+// Start checks for a stored refresh token if no DriveClient is set yet. If
+// absent, it spawns a background goroutine that retries until the token
+// appears (e.g. after first sign-in). Otherwise it starts the full sync
+// pipeline: folder setup, initial reconcile, poller, and watcher.
 func (sm *SyncManager) Start(ctx context.Context) {
 	if sm.driveClient == nil {
 		refreshToken, err := sm.tokenStore.GetDriveToken()
@@ -96,17 +99,67 @@ func (sm *SyncManager) Start(ctx context.Context) {
 			return
 		}
 		if refreshToken == "" {
-			slog.Warn("drive sync: no refresh token — sign out and back in to grant Drive access")
+			slog.Warn("drive sync: no refresh token — will retry after sign-in")
+			go sm.waitForToken(ctx)
 			return
 		}
-		httpClient := sm.buildHTTPClient(ctx, refreshToken)
+		factory := sm.httpClientFactory
+		if factory == nil {
+			factory = sm.buildHTTPClient
+		}
+		httpClient := factory(ctx, refreshToken)
 		sm.driveClient, err = NewDriveClient(ctx, httpClient)
 		if err != nil {
 			slog.Error("drive sync: creating drive client", "err", err)
 			return
 		}
 	}
+	sm.startWithClient(ctx)
+}
 
+// waitForToken polls the token store until a refresh token appears, then
+// starts the full sync pipeline. Exits when ctx is cancelled.
+func (sm *SyncManager) waitForToken(ctx context.Context) {
+	interval := sm.tokenRetryInterval
+	if interval == 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			token, err := sm.tokenStore.GetDriveToken()
+			if err != nil {
+				slog.Error("drive sync: reading refresh token in retry loop", "err", err)
+				continue
+			}
+			if token == "" {
+				continue
+			}
+			slog.Info("drive sync: refresh token found, starting sync")
+			factory := sm.httpClientFactory
+			if factory == nil {
+				factory = sm.buildHTTPClient
+			}
+			httpClient := factory(ctx, token)
+			dc, err := NewDriveClient(ctx, httpClient)
+			if err != nil {
+				slog.Error("drive sync: creating drive client after token found", "err", err)
+				continue
+			}
+			sm.driveClient = dc
+			sm.startWithClient(ctx)
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// startWithClient runs the full startup sequence: folder setup, page token,
+// initial reconcile, poller, and watcher. Assumes sm.driveClient is set.
+func (sm *SyncManager) startWithClient(ctx context.Context) {
 	sm.startWorkerOnce()
 
 	rootID, err := sm.driveClient.EnsureFolder(sm.cfg.RootFolderName, "")
