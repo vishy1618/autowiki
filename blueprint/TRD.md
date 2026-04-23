@@ -81,7 +81,7 @@ autowiki/
 - On success, a signed HTTP-only session cookie is issued. The session token is stored in Pebble with an expiry.
 - An auth middleware wraps all `/api/*` routes (except the OAuth endpoints themselves). Unauthenticated requests to `/api/*` return 401. Unauthenticated requests to any other route are redirected to the sign-in page.
 - The Remix frontend has a single `/login` route that renders the "Sign in with Google" button. All other routes require a valid session.
-- **Drive scope**: When `drive_sync.enabled: true` in config, the OAuth flow additionally requests the `https://www.googleapis.com/auth/drive.file` scope and switches to `oauth2.AccessTypeOffline` so that a refresh token is issued. This scope grants access only to files created by the app — it cannot read the user's other Drive files. The refresh token is written to Pebble via the `store.DriveTokenStore` interface after the callback. If a user logs in without Drive sync enabled and later enables it, they must sign out and back in to grant the new scope.
+- **Drive scope**: When `drive_sync.enabled: true` in config, the OAuth flow additionally requests the `https://www.googleapis.com/auth/drive` scope with `access_type=offline` and `prompt=consent`. The `prompt=consent` parameter ensures Google issues a refresh token on every sign-in (not just the first). The refresh token is written to Pebble via the `store.DriveTokenStore` interface after the callback. If a user enables Drive sync after a previous sign-in without it, they must sign out and back in to grant the new scope.
 
 ### 4.3 Chat & SSE Handler (`internal/chat`)
 
@@ -137,7 +137,7 @@ All pipelines receive `schema.md` as part of the system prompt to enforce wiki c
 
 Activated only when `drive_sync.enabled: true`. Manages two independent concerns: vault file sync and Pebble backup.
 
-`drivesync.New(cfg, db, vaultPath, tokenStore)` is the single entry point — it owns all internal construction and returns a `*SyncManager`. `main.go` calls `New(...)` then `go sm.Start(ctx)`; it has no knowledge of drivesync internals. `SyncManager.Start` checks for the refresh token itself: if absent it logs a clear message and returns without error, so the user is never left with a silent no-op.
+`drivesync.New(cfg, clientID, clientSecret, db, vaultPath, tokenStore)` is the single entry point — it owns all internal construction and returns a `*SyncManager`. `main.go` calls `New(...)` then `go sm.Start(ctx)`; it has no knowledge of drivesync internals. `SyncManager.Start` checks for the refresh token: if absent, it spawns a background goroutine that polls the token store every 30 s and starts the full pipeline as soon as a token appears (e.g. after first sign-in). No server restart is required.
 
 `PersistingTokenSource` wraps the `oauth2.TokenSource` built from the stored refresh token. On each token refresh it writes the updated refresh token back to Pebble via `DriveTokenStore`, so a server restart after a mid-lifetime refresh always finds a valid token.
 
@@ -162,6 +162,8 @@ Activated only when `drive_sync.enabled: true`. Manages two independent concerns
 
 #### Pebble Backup
 
+> **Not yet implemented** (US-19, US-20). Design below is the intended spec.
+
 - A background goroutine runs on a configurable interval (`drive_sync.pebble_backup.interval_mins`, default 30).
 - Uses `pebble.DB.Checkpoint(tmpDir)` to create a consistent, point-in-time snapshot of the entire database while it remains open and writable.
 - The checkpoint directory is archived as a `tar.gz` and uploaded to a fixed file in Drive named `autowiki-pebble-backup.tar.gz`, replacing the previous backup.
@@ -171,12 +173,15 @@ Activated only when `drive_sync.enabled: true`. Manages two independent concerns
 
 ```
 internal/drivesync/
-  manager.go    — SyncManager + New() factory; starts/stops watcher, poller, and backup goroutines
+  manager.go    — SyncManager + New() factory; starts/stops watcher, poller, and retry goroutine
   token.go      — PersistingTokenSource: wraps oauth2.TokenSource, writes updated tokens to Pebble
   client.go     — Drive API wrapper: upload, trash, list changes, folder management
   watcher.go    — fsnotify watcher with 2 s per-path debounce queue
   state.go      — Pebble-backed sync state (file ID map, folder ID map, page token)
-  backup.go     — Pebble checkpoint → tar.gz → Drive upload; restore on startup
+  status.go     — DriveStatus struct, StatusProvider interface, SyncManager.Status() method
+  handler.go    — GET /api/drive/status HTTP handler
+  conflict.go   — pure Resolve() function for conflict resolution
+  backup.go     — (not yet implemented) Pebble checkpoint → tar.gz → Drive upload; restore on startup
 ```
 
 ---
@@ -190,6 +195,7 @@ internal/drivesync/
   - File and image attachment support (drag-and-drop or file picker).
   - Infinite scroll chat history — presents all messages as a single unbroken timeline. Older messages are fetched a session at a time as the user scrolls up; session boundaries are invisible to the user.
   - Vault change summary rendered inline after responses that triggered writes.
+  - Drive sync status pill in the header (amber / red / green) with a popover showing last sync time or error details. Polls `GET /api/drive/status` every 60 s. Hidden when Drive sync is disabled.
 
 ---
 
@@ -260,9 +266,27 @@ event: error    data: { "message": "..." }
 
 ---
 
-### `GET /api/sessions`
+### `GET /api/auth/me`
 
-Returns the list of session IDs and metadata, newest first. Used by the frontend as a pagination index for infinite scroll — not exposed as a concept in the UI.
+Returns the authenticated user's email. Used by the frontend as a lightweight auth probe on page load.
+
+**Response**: `{ "email": "user@example.com" }` or `401`.
+
+---
+
+### `POST /api/attachments`
+
+Uploads a file attachment. The frontend uploads files here before sending the chat message, then passes the returned vault path in `attachment_ids[]`.
+
+**Request**: `multipart/form-data` with a single `file` field.
+
+**Response**: `{ "path": "_attachments/filename-timestamp.ext" }`
+
+---
+
+### `GET /api/chat-sessions`
+
+Returns session metadata, newest first. Supports `?limit=N&offset=M` for pagination. Used by the frontend for infinite-scroll history — sessions are not exposed as a concept in the UI.
 
 **Response**:
 ```json
@@ -275,15 +299,15 @@ Returns the list of session IDs and metadata, newest first. Used by the frontend
 
 ---
 
-### `GET /api/sessions/:id`
+### `GET /api/chat-sessions/{id}`
 
-Returns the full message history for a single session. The frontend fetches sessions one at a time as the user scrolls up, prepending each batch to the visible timeline.
+Returns the full message history for a single session.
 
 **Response**:
 ```json
 {
   "messages": [
-    { "id": "...", "role": "user|assistant", "content": "...", "attachments": [], "created_at": "..." }
+    { "id": "...", "role": "user|assistant", "content": "...", "attachments": [], "created_at": "...", "vault_changes": ["path/to/file.md"] }
   ]
 }
 ```
@@ -402,4 +426,4 @@ drive_sync:
     interval_mins: 30                        # how often to snapshot and upload the Pebble DB (→ autowiki/pebble)
 ```
 
-> **Note**: `drive_sync.enabled` requires the user to sign in (or re-sign-in) with the `drive.file` OAuth scope. On first enable, sign out and back in. The same `google_client_id` / `google_client_secret` are reused — no additional Google Cloud configuration is needed beyond enabling the Drive API in the same Google Cloud project.
+> **Note**: `drive_sync.enabled` requires the user to sign in (or re-sign-in) to grant the `drive` OAuth scope. On first enable, sign out and back in — the consent screen will appear. The same `google_client_id` / `google_client_secret` are reused; no additional credentials are needed beyond enabling the Drive API in the same Google Cloud project.
