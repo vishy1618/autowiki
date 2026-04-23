@@ -42,7 +42,7 @@ func newTestServer(t *testing.T, baseURL string) http.Handler {
 	sessions := store.NewPebbleStore(db)
 	chats := store.NewPebbleChatStore(db)
 	vm := vault.NewManager(cfg.VaultPath)
-	return server.New(cfg, sessions, chats, nil, vm, nil, nil, nil, false)
+	return server.New(cfg, sessions, chats, nil, vm, nil, nil, nil, nil, false)
 }
 
 func TestServer_Login_RedirectsToGoogleWithConfiguredBaseURL(t *testing.T) {

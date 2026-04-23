@@ -70,18 +70,17 @@ func main() {
 	go dreamer.Start(dreamCtx)
 
 	var driveTokenStore store.DriveTokenStore
+	var statusProvider drivesync.StatusProvider
 	if cfg.DriveSync.Enabled {
 		driveTokenStore = sessions
-	}
-
-	if cfg.DriveSync.Enabled {
 		syncCtx, syncCancel := context.WithCancel(context.Background())
 		defer syncCancel()
 		sm := drivesync.New(cfg.DriveSync, cfg.Auth.GoogleClientID, cfg.Auth.GoogleClientSecret, db, cfg.VaultPath, sessions)
 		go sm.Start(syncCtx)
+		statusProvider = sm
 	}
 
-	srv := server.New(cfg, sessions, chats, haikuClient, vm, haikuClient, consolidateFn, driveTokenStore, *dev)
+	srv := server.New(cfg, sessions, chats, haikuClient, vm, haikuClient, consolidateFn, driveTokenStore, statusProvider, *dev)
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

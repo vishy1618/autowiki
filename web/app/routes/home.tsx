@@ -9,6 +9,14 @@ export function meta({}: Route.MetaArgs) {
   return [{ title: "autowiki" }];
 }
 
+interface DriveStatusData {
+  enabled: boolean;
+  connected: boolean;
+  last_vault_sync: string | null;
+  last_pebble_backup: string | null;
+  last_error: string | null;
+}
+
 interface VaultChange {
   path: string;
 }
@@ -51,6 +59,7 @@ export default function Home() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [driveStatus, setDriveStatus] = useState<DriveStatusData | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [historyOffset, setHistoryOffset] = useState(0);
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
@@ -78,6 +87,21 @@ export default function Home() {
   useEffect(() => {
     if (ready) inputRef.current?.focus();
   }, [ready]);
+
+  useEffect(() => {
+    async function fetchDriveStatus() {
+      try {
+        const r = await fetch("/api/drive/status");
+        if (!r.ok) return;
+        setDriveStatus(await r.json() as DriveStatusData);
+      } catch {
+        // ignore; no pill shown
+      }
+    }
+    fetchDriveStatus();
+    const id = setInterval(fetchDriveStatus, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const HISTORY_LIMIT = 3;
 
@@ -407,9 +431,12 @@ export default function Home() {
       {/* Header */}
       <header style={styles.header}>
         <span style={styles.logo}>auto<span style={styles.logoWiki}>wiki</span></span>
-        <button onClick={handleSignOut} style={styles.signOutBtn}>
-          Sign out
-        </button>
+        <div style={styles.headerRight}>
+          {driveStatus && <DriveSyncStatus status={driveStatus} />}
+          <button onClick={handleSignOut} style={styles.signOutBtn}>
+            Sign out
+          </button>
+        </div>
       </header>
 
       {/* Message thread */}
@@ -489,6 +516,65 @@ export default function Home() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DriveSyncStatus({ status }: { status: DriveStatusData }) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleMouseDown(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [open]);
+
+  if (!status.enabled) return null;
+
+  let dotColor: string;
+  let label: string;
+  if (!status.connected) {
+    dotColor = "#f59e0b";
+    label = "Not connected";
+  } else if (status.last_error) {
+    dotColor = "#ef4444";
+    label = "Sync error";
+  } else {
+    dotColor = "#22c55e";
+    label = status.last_vault_sync
+      ? `Synced ${formatRelative(status.last_vault_sync)}`
+      : "Synced";
+  }
+
+  let popoverContent: React.ReactNode;
+  if (!status.connected) {
+    popoverContent = "Drive access not granted. Sign out and back in to enable sync.";
+  } else if (status.last_error) {
+    popoverContent = (
+      <>
+        <p style={{ margin: "0 0 0.4rem" }}>{status.last_error}</p>
+        <p style={{ margin: 0, color: "#888" }}>Check server logs for details.</p>
+      </>
+    );
+  } else if (status.last_vault_sync) {
+    popoverContent = `Last synced: ${new Date(status.last_vault_sync).toLocaleString()}`;
+  } else {
+    popoverContent = "No syncs recorded yet";
+  }
+
+  return (
+    <div ref={wrapperRef} style={{ position: "relative" }}>
+      <button onClick={() => setOpen((v) => !v)} style={styles.drivePill}>
+        <span style={{ ...styles.driveDot, background: dotColor }} />
+        {label}
+      </button>
+      {open && <div style={styles.drivePopover}>{popoverContent}</div>}
     </div>
   );
 }
@@ -633,6 +719,45 @@ const styles: Record<string, React.CSSProperties> = {
   },
   logoWiki: {
     color: "#1d4ed8",
+  },
+  headerRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+  },
+  drivePill: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.4rem",
+    background: "none",
+    border: "1px solid #e5e5e5",
+    borderRadius: "20px",
+    padding: "0.3rem 0.75rem",
+    cursor: "pointer",
+    fontSize: "0.8rem",
+    color: "#555",
+    whiteSpace: "nowrap" as const,
+  },
+  driveDot: {
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    flexShrink: 0,
+  },
+  drivePopover: {
+    position: "absolute" as const,
+    top: "calc(100% + 8px)",
+    right: 0,
+    background: "#fff",
+    border: "1px solid #e5e5e5",
+    borderRadius: "8px",
+    padding: "0.75rem 1rem",
+    boxShadow: "0 4px 16px rgba(0,0,0,0.1)",
+    fontSize: "0.85rem",
+    color: "#333",
+    minWidth: "220px",
+    maxWidth: "320px",
+    zIndex: 50,
   },
   signOutBtn: {
     background: "none",

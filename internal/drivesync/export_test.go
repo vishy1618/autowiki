@@ -4,6 +4,9 @@ import (
 	"context"
 	"path/filepath"
 	"time"
+
+	"github.com/cockroachdb/pebble"
+	"github.com/suvish/autowiki/internal/store"
 )
 
 // PollOnceForTest triggers one synchronous poll cycle.
@@ -50,4 +53,13 @@ func SetWatcherDebounce(sm *SyncManager, d time.Duration) {
 // Use to test synthetic-event logic with a fully populated directory.
 func TriggerNewDirForTest(w *Watcher, dirPath string) {
 	w.handleNewDir(dirPath)
+}
+
+// NewWithTokenStore creates a minimal SyncManager for testing Status().
+func NewWithTokenStore(db *pebble.DB, tokenStore store.DriveTokenStore) *SyncManager {
+	return &SyncManager{
+		state:      NewState(db),
+		tokenStore: tokenStore,
+		syncCh:     make(chan syncJob, 1),
+	}
 }

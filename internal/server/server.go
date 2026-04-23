@@ -15,6 +15,7 @@ import (
 	"github.com/suvish/autowiki/internal/chatsessions"
 	"github.com/suvish/autowiki/internal/config"
 	"github.com/suvish/autowiki/internal/dream"
+	"github.com/suvish/autowiki/internal/drivesync"
 	"github.com/suvish/autowiki/internal/store"
 	"github.com/suvish/autowiki/internal/vault"
 )
@@ -29,10 +30,11 @@ type Server struct {
 	vault           *vault.Manager
 	describer       attachment.Describer
 	consolidate     dream.ConsolidateFn
-	driveTokenStore store.DriveTokenStore // nil when drive sync is disabled
+	driveTokenStore store.DriveTokenStore   // nil when drive sync is disabled
+	statusProvider  drivesync.StatusProvider // nil when drive sync is disabled
 }
 
-func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, streamer chat.Streamer, vm *vault.Manager, describer attachment.Describer, consolidate dream.ConsolidateFn, driveTokenStore store.DriveTokenStore, dev bool) *Server {
+func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore, streamer chat.Streamer, vm *vault.Manager, describer attachment.Describer, consolidate dream.ConsolidateFn, driveTokenStore store.DriveTokenStore, statusProvider drivesync.StatusProvider, dev bool) *Server {
 	s := &Server{
 		cfg:             cfg,
 		mux:             http.NewServeMux(),
@@ -44,6 +46,7 @@ func New(cfg *config.Config, sessions store.SessionStore, chats store.ChatStore,
 		describer:       describer,
 		consolidate:     consolidate,
 		driveTokenStore: driveTokenStore,
+		statusProvider:  statusProvider,
 	}
 	s.routes()
 	return s
@@ -73,6 +76,7 @@ func (s *Server) routes() {
 	s.mux.Handle("/api/chat-sessions", mw.Require(chatsessions.NewHandler(s.chats)))
 	s.mux.Handle("/api/chat-sessions/", mw.Require(chatsessions.NewHandler(s.chats)))
 	s.mux.Handle("/api/dream/run", mw.Require(dream.NewHandler(s.consolidate)))
+	s.mux.Handle("/api/drive/status", mw.Require(drivesync.NewStatusHandler(s.statusProvider)))
 
 	// All non-API routes serve the SPA unconditionally. Auth is enforced
 	// client-side; the server only protects /api/* data endpoints.

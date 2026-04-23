@@ -102,6 +102,15 @@ function attachResp(path: string) {
   return new Response(JSON.stringify({ path }), { status: 200 });
 }
 
+const DRIVE_DISABLED = { enabled: false, connected: false, last_vault_sync: null, last_pebble_backup: null, last_error: null };
+const DRIVE_NOT_CONNECTED = { enabled: true, connected: false, last_vault_sync: null, last_pebble_backup: null, last_error: null };
+const DRIVE_OK = { enabled: true, connected: true, last_vault_sync: null, last_pebble_backup: null, last_error: null };
+const DRIVE_ERROR = { enabled: true, connected: true, last_vault_sync: null, last_pebble_backup: null, last_error: "quota exceeded" };
+
+function driveResp(status: object) {
+  return new Response(JSON.stringify(status), { status: 200 });
+}
+
 // ── setup ────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
@@ -772,6 +781,15 @@ describe("Home — chat UI", () => {
     expect(paragraphs.some((t) => /I found it/.test(t))).toBe(true);
   });
 
+  it("polls /api/drive/status on mount", async () => {
+    const fetchSpy = mockFetch({ "/api/drive/status": [driveResp(DRIVE_DISABLED)] });
+    renderHome();
+    await waitFor(() => expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(fetchSpy.mock.calls.some(([url]) => String(url) === "/api/drive/status")).toBe(true)
+    );
+  });
+
   it("stops fetching when fewer sessions than limit are returned", async () => {
     const triggerSentinel = mockIntersectionObserver();
     const fetchSpy = mockFetch({
@@ -813,5 +831,80 @@ describe("Home — chat UI", () => {
     ).length;
 
     expect(callsAfterTrigger).toBe(callsBeforeTrigger);
+  });
+});
+
+describe("Home — DriveSyncStatus pill", () => {
+  it("renders no pill when drive sync is disabled", async () => {
+    mockFetch({ "/api/drive/status": [driveResp(DRIVE_DISABLED)] });
+    renderHome();
+    await waitFor(() => expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument());
+    expect(screen.queryByText(/not connected/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/sync error/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/synced/i)).not.toBeInTheDocument();
+  });
+
+  it("shows 'Not connected' pill when enabled but not connected", async () => {
+    mockFetch({ "/api/drive/status": [driveResp(DRIVE_NOT_CONNECTED)] });
+    renderHome();
+    await waitFor(() => expect(screen.getByText(/not connected/i)).toBeInTheDocument());
+  });
+
+  it("shows 'Sync error' pill when connected with error", async () => {
+    mockFetch({ "/api/drive/status": [driveResp(DRIVE_ERROR)] });
+    renderHome();
+    await waitFor(() => expect(screen.getByText(/sync error/i)).toBeInTheDocument());
+  });
+
+  it("shows 'Synced' pill when connected with no error and no last sync", async () => {
+    mockFetch({ "/api/drive/status": [driveResp(DRIVE_OK)] });
+    renderHome();
+    await waitFor(() => expect(screen.getByText(/^synced$/i)).toBeInTheDocument());
+  });
+
+  it("shows relative time in pill when last_vault_sync is set", async () => {
+    const ts = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    mockFetch({ "/api/drive/status": [driveResp({ ...DRIVE_OK, last_vault_sync: ts })] });
+    renderHome();
+    await waitFor(() => expect(screen.getByText(/synced.*minutes ago/i)).toBeInTheDocument());
+  });
+
+  it("opens popover with not-connected message on pill click", async () => {
+    mockFetch({ "/api/drive/status": [driveResp(DRIVE_NOT_CONNECTED)] });
+    const user = userEvent.setup();
+    renderHome();
+    await waitFor(() => expect(screen.getByText(/not connected/i)).toBeInTheDocument());
+    await user.click(screen.getByText(/not connected/i));
+    expect(screen.getByText(/sign out and back in/i)).toBeInTheDocument();
+  });
+
+  it("opens popover with error details on pill click", async () => {
+    mockFetch({ "/api/drive/status": [driveResp(DRIVE_ERROR)] });
+    const user = userEvent.setup();
+    renderHome();
+    await waitFor(() => expect(screen.getByText(/sync error/i)).toBeInTheDocument());
+    await user.click(screen.getByText(/sync error/i));
+    expect(screen.getByText(/quota exceeded/)).toBeInTheDocument();
+    expect(screen.getByText(/check server logs/i)).toBeInTheDocument();
+  });
+
+  it("opens popover with last sync time when connected and ok", async () => {
+    const ts = "2026-04-20T10:30:00Z";
+    mockFetch({ "/api/drive/status": [driveResp({ ...DRIVE_OK, last_vault_sync: ts })] });
+    const user = userEvent.setup();
+    renderHome();
+    await waitFor(() => expect(screen.getByText(/synced/i)).toBeInTheDocument());
+    await user.click(screen.getByText(/synced/i));
+    expect(screen.getByText(/last synced:/i)).toBeInTheDocument();
+    expect(screen.getByText(/2026/)).toBeInTheDocument();
+  });
+
+  it("opens popover with 'No syncs recorded yet' when connected but no last sync", async () => {
+    mockFetch({ "/api/drive/status": [driveResp(DRIVE_OK)] });
+    const user = userEvent.setup();
+    renderHome();
+    await waitFor(() => expect(screen.getByText(/^synced$/i)).toBeInTheDocument());
+    await user.click(screen.getByText(/^synced$/i));
+    expect(screen.getByText(/no syncs recorded yet/i)).toBeInTheDocument();
   });
 });
