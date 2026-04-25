@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatRelative } from "../utils/formatRelative";
+import { isNearBottom } from "./scrollLock";
 import type { Route } from "./+types/home";
 
 export function meta({}: Route.MetaArgs) {
@@ -65,6 +66,8 @@ export default function Home() {
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -158,8 +161,20 @@ export default function Home() {
   }, [ready]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (pinnedRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
+
+  useEffect(() => {
+    const el = threadRef.current;
+    if (!el) return;
+    function onScroll() {
+      pinnedRef.current = isNearBottom(el!.scrollTop, el!.scrollHeight, el!.clientHeight);
+    }
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     if (!hasMoreHistory || historyLoading) return;
@@ -445,6 +460,7 @@ export default function Home() {
         error={error}
         historyLoading={historyLoading}
         hasMoreHistory={hasMoreHistory}
+        threadRef={threadRef}
         bottomRef={bottomRef}
         sentinelRef={sentinelRef}
       />
@@ -585,6 +601,7 @@ interface MessageThreadProps {
   error: string | null;
   historyLoading: boolean;
   hasMoreHistory: boolean;
+  threadRef: React.RefObject<HTMLDivElement | null>;
   bottomRef: React.RefObject<HTMLDivElement | null>;
   sentinelRef: React.RefObject<HTMLDivElement | null>;
 }
@@ -594,11 +611,12 @@ const MessageThread = memo(function MessageThread({
   error,
   historyLoading,
   hasMoreHistory,
+  threadRef,
   bottomRef,
   sentinelRef,
 }: MessageThreadProps) {
   return (
-    <div style={styles.thread}>
+    <div ref={threadRef} style={styles.thread}>
       {hasMoreHistory && <div ref={sentinelRef} />}
       {historyLoading && <p style={styles.historyLoading}>Loading…</p>}
       {messages.length === 0 && !historyLoading && (
