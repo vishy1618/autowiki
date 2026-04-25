@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"time"
 
 	"github.com/suvish/autowiki/internal/store"
 )
@@ -40,7 +42,12 @@ func NewClient(cfg Config) *Client {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = defaultBaseURL
 	}
-	return &Client{cfg: cfg, httpClient: http.DefaultClient}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 15 * time.Second,
+	}).DialContext
+	return &Client{cfg: cfg, httpClient: &http.Client{Transport: transport}}
 }
 
 // requestMessage is the per-message shape expected by the Anthropic API.
