@@ -611,6 +611,7 @@ const MessageThread = memo(function MessageThread({
         return (
           <div
             key={i}
+            className="chat-bubble"
             style={{
               ...styles.bubble,
               ...(msg.role === "user" ? styles.userBubble : styles.assistantBubble),
@@ -685,8 +686,11 @@ const markdownComponents = {
     <a target="_blank" rel="noreferrer" {...props} />
   ),
   // Tables need explicit styles because Tailwind preflight collapses borders.
+  // Wrapping div allows horizontal scroll on narrow screens.
   table: (props: React.HTMLAttributes<HTMLTableElement>) => (
-    <table style={styles.mdTable} {...props} />
+    <div className="md-table-wrap">
+      <table style={styles.mdTable} {...props} />
+    </div>
   ),
   th: (props: React.ThHTMLAttributes<HTMLTableCellElement>) => (
     <th style={styles.mdTh} {...props} />
@@ -783,7 +787,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.95rem",
   },
   bubble: {
-    maxWidth: "75%",
     padding: "0.75rem 1rem",
     borderRadius: "12px",
     lineHeight: 1.6,

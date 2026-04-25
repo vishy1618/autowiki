@@ -85,3 +85,13 @@ body {
 .md a { color: #1d4ed8; text-decoration: underline; }
 
 .md hr { border: none; border-top: 1px solid #e5e7eb; margin: 1rem 0; }
+
+/* Table wrapper — allows horizontal scroll on narrow screens */
+.md-table-wrap { overflow-x: auto; margin-bottom: 1rem; }
+.md-table-wrap table { margin-bottom: 0; }
+
+/* Chat bubble responsive max-width */
+.chat-bubble { max-width: 75%; }
+@media (max-width: 640px) {
+  .chat-bubble { max-width: 92%; }
+}
