@@ -485,6 +485,7 @@ export default function Home() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onFocus={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
             placeholder="Message autowiki…"
             rows={2}
           />
@@ -704,7 +705,7 @@ const styles: Record<string, React.CSSProperties> = {
   layout: {
     display: "flex",
     flexDirection: "column",
-    height: "100vh",
+    height: "100dvh",
     fontFamily: "Inter, system-ui, sans-serif",
     background: "#f9f9f9",
   },
