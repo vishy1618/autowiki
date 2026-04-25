@@ -515,32 +515,19 @@ func (c *Client) Stream(ctx context.Context, systemPrompt string, messages []sto
 		return nil, fmt.Errorf("marshalling request: %w", err)
 	}
 
-	const maxAttempts = 3
-	var (
-		resp    *http.Response
-		doErr   error
-	)
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			c.cfg.BaseURL+messagesPath, bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("creating request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-api-key", c.cfg.APIKey)
-		req.Header.Set("anthropic-version", anthropicVersion)
-		req.Header.Set("Accept", "text/event-stream")
-
-		resp, doErr = c.httpClient.Do(req)
-		if doErr == nil {
-			break
-		}
-		if !isRetryable(doErr) {
-			break
-		}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.cfg.BaseURL+messagesPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
 	}
-	if doErr != nil {
-		return nil, fmt.Errorf("sending request: %w", doErr)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.cfg.APIKey)
+	req.Header.Set("anthropic-version", anthropicVersion)
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
