@@ -284,6 +284,11 @@ export default function Home() {
       });
 
       if (!resp.ok) {
+        if (resp.status >= 500 && attempt < MAX_AUTO_RETRIES) {
+          setError("Connection hiccup, retrying automatically…");
+          setTimeout(() => doStream(text, attachments, attempt + 1), RETRY_DELAY_MS);
+          return;
+        }
         const bodyText = (await resp.text().catch(() => "")).trim();
         setMessages((prev) => {
           const next = [...prev];

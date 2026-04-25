@@ -895,6 +895,27 @@ describe("Home — auto-retry on error", () => {
     await waitFor(() => expect(screen.getByText("Hello!")).toBeInTheDocument());
   });
 
+  it("retries when the server returns a 500", async () => {
+    const fetchSpy = mockFetch({
+      "/api/chat": [
+        new Response("internal server error", { status: 500 }),
+        chatSSE("event: delta\ndata: {\"text\":\"Recovered!\"}\n\n", SSE_DONE),
+      ],
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderHome();
+    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
+    await user.type(textarea, "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
+
+    await act(async () => { vi.advanceTimersByTime(4000); });
+
+    await waitFor(() => expect(screen.getByText("Recovered!")).toBeInTheDocument());
+    const chatCalls = fetchSpy.mock.calls.filter(([url]) => url === "/api/chat");
+    expect(chatCalls).toHaveLength(2);
+  });
+
   it("shows permanent error after max retries are exhausted", async () => {
     mockFetch({
       "/api/chat": [
