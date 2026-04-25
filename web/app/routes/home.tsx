@@ -71,6 +71,7 @@ export default function Home() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const retryRef = useRef<{ text: string; attachments: PendingAttachment[]; attempt: number } | null>(null);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -259,28 +260,21 @@ export default function Home() {
     });
   }
 
-  async function sendMessage() {
-    const text = input.trim();
-    if (!text || sending || pendingAttachments.some((a) => a.uploading)) return;
+  const RETRY_DELAY_MS = 4000;
+  const MAX_AUTO_RETRIES = 2;
 
-    const readyAttachments = pendingAttachments.filter((a) => !a.uploading && a.path);
-
-    setInput("");
-    setPendingAttachments([]);
+  async function doStream(text: string, attachments: PendingAttachment[], attempt: number) {
     setError(null);
     setSending(true);
-    inputRef.current?.focus();
 
-    const sentAt = new Date().toISOString();
     setMessages((prev) => [
       ...prev,
-      { role: "user", content: text, attachments: readyAttachments, createdAt: sentAt },
       { role: "assistant", content: "", streaming: true },
     ]);
 
     try {
       const body = new URLSearchParams({ message: text });
-      for (const att of readyAttachments) {
+      for (const att of attachments) {
         body.append("attachment_ids", att.path!);
       }
       const resp = await apiFetch("/api/chat", {
@@ -380,7 +374,12 @@ export default function Home() {
             } else if (currentEvent === "error") {
               try {
                 const { message } = JSON.parse(data) as { message: string };
-                setError(message);
+                if (attempt < MAX_AUTO_RETRIES) {
+                  setError("Connection hiccup, retrying automatically…");
+                  setTimeout(() => doStream(text, attachments, attempt + 1), RETRY_DELAY_MS);
+                } else {
+                  setError(message);
+                }
               } catch {
                 setError("An error occurred");
               }
@@ -407,6 +406,27 @@ export default function Home() {
       });
       setSending(false);
     }
+  }
+
+  async function sendMessage() {
+    const text = input.trim();
+    if (!text || sending || pendingAttachments.some((a) => a.uploading)) return;
+
+    const readyAttachments = pendingAttachments.filter((a) => !a.uploading && a.path);
+
+    setInput("");
+    setPendingAttachments([]);
+    retryRef.current = null;
+    inputRef.current?.focus();
+    pinnedRef.current = true;
+
+    const sentAt = new Date().toISOString();
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: text, attachments: readyAttachments, createdAt: sentAt },
+    ]);
+
+    await doStream(text, readyAttachments, 0);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {

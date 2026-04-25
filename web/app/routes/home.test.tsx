@@ -834,6 +834,93 @@ describe("Home — chat UI", () => {
   });
 });
 
+const SSE_ERROR = (msg = "network error") =>
+  `event: error\ndata: ${JSON.stringify({ message: msg })}\n\n`;
+
+describe("Home — auto-retry on error", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows retrying message instead of permanent error on first failure", async () => {
+    mockFetch({ "/api/chat": [chatSSE(SSE_ERROR())] });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderHome();
+    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
+    await user.type(textarea, "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/retrying/i)).toBeInTheDocument()
+    );
+  });
+
+  it("automatically re-sends after the retry delay", async () => {
+    const fetchSpy = mockFetch({
+      "/api/chat": [chatSSE(SSE_ERROR()), chatSSE(SSE_DONE)],
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderHome();
+    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
+    await user.type(textarea, "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
+
+    await act(async () => { vi.advanceTimersByTime(4000); });
+
+    await waitFor(() => {
+      const chatCalls = fetchSpy.mock.calls.filter(([url]) => url === "/api/chat");
+      expect(chatCalls).toHaveLength(2);
+    });
+  });
+
+  it("shows the response when the retry succeeds", async () => {
+    mockFetch({
+      "/api/chat": [
+        chatSSE(SSE_ERROR()),
+        chatSSE("event: delta\ndata: {\"text\":\"Hello!\"}\n\n", SSE_DONE),
+      ],
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderHome();
+    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
+    await user.type(textarea, "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
+
+    await act(async () => { vi.advanceTimersByTime(4000); });
+
+    await waitFor(() => expect(screen.getByText("Hello!")).toBeInTheDocument());
+  });
+
+  it("shows permanent error after max retries are exhausted", async () => {
+    mockFetch({
+      "/api/chat": [
+        chatSSE(SSE_ERROR("fail 1")),
+        chatSSE(SSE_ERROR("fail 2")),
+        chatSSE(SSE_ERROR("fail 3")),
+      ],
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderHome();
+    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
+    await user.type(textarea, "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+
+    // exhaust both auto-retries
+    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
+    await act(async () => { vi.advanceTimersByTime(4000); });
+    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
+    await act(async () => { vi.advanceTimersByTime(4000); });
+
+    await waitFor(() =>
+      expect(screen.getByText(/fail 3/i)).toBeInTheDocument()
+    );
+  });
+});
+
 describe("Home — DriveSyncStatus pill", () => {
   it("renders no pill when drive sync is disabled", async () => {
     mockFetch({ "/api/drive/status": [driveResp(DRIVE_DISABLED)] });
