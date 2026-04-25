@@ -718,8 +718,8 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#fff",
   },
   logo: {
-    fontWeight: 600,
-    fontSize: "1rem",
+    fontWeight: 700,
+    fontSize: "1.2rem",
     color: "#111",
   },
   logoWiki: {
@@ -791,6 +791,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0.75rem 1rem",
     borderRadius: "12px",
     lineHeight: 1.6,
+    fontSize: "1.0625rem",
   },
   userBubble: {
     alignSelf: "flex-end",
@@ -804,7 +805,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#111",
   },
   roleLabel: {
-    fontSize: "0.7rem",
+    fontSize: "0.75rem",
     fontWeight: 600,
     textTransform: "uppercase",
     letterSpacing: "0.05em",
@@ -919,13 +920,13 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "hidden",
   },
   attachmentFileExt: {
-    fontSize: "0.7rem",
+    fontSize: "0.75rem",
     fontWeight: 700,
     color: "#555",
     letterSpacing: "0.05em",
   },
   attachmentFileName: {
-    fontSize: "0.65rem",
+    fontSize: "0.7rem",
     color: "#888",
     textAlign: "center" as const,
     wordBreak: "break-all" as const,
@@ -953,7 +954,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "50%",
   },
   chipFileExt: {
-    fontSize: "0.65rem",
+    fontSize: "0.7rem",
     fontWeight: 700,
     background: "#ccc",
     borderRadius: "4px",
@@ -981,7 +982,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   timestamp: {
     display: "block",
-    fontSize: "0.7rem",
+    fontSize: "0.75rem",
     color: "#aaa",
     marginBottom: "0.35rem",
   },
@@ -1009,7 +1010,7 @@ const styles: Record<string, React.CSSProperties> = {
     listStyle: "disc",
   },
   vaultListItem: {
-    fontSize: "0.8rem",
+    fontSize: "0.75rem",
     color: "#555",
     fontFamily: "monospace",
     marginTop: "0.2rem",
