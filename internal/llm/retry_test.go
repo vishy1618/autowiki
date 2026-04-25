@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -46,6 +48,14 @@ func TestIsRetryable_EOF(t *testing.T) {
 func TestIsRetryable_NilError(t *testing.T) {
 	if isRetryable(nil) {
 		t.Fatal("nil error must not be retryable")
+	}
+}
+
+func TestIsRetryable_TLSBadRecordMAC(t *testing.T) {
+	// tls.AlertError(20) is bad_record_mac — the exact error seen in production.
+	err := fmt.Errorf("remote: %w", tls.AlertError(20))
+	if !isRetryable(err) {
+		t.Fatal("tls.AlertError (bad record MAC) must be retryable")
 	}
 }
 

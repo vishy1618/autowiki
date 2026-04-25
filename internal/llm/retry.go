@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"crypto/tls"
 	"errors"
 	"net"
 	"syscall"
@@ -17,6 +18,10 @@ func isRetryable(err error) bool {
 		if errors.Is(netErr, syscall.ECONNRESET) {
 			return true
 		}
+	}
+	var tlsErr tls.AlertError
+	if errors.As(err, &tlsErr) {
+		return true
 	}
 	return false
 }
