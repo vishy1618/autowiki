@@ -32,6 +32,7 @@ type Config struct {
 type Client struct {
 	cfg        Config
 	httpClient *http.Client
+	retrySleep func(time.Duration) // injectable for tests; defaults to time.Sleep
 }
 
 // NewClient returns a new Client with the given configuration.
@@ -47,7 +48,11 @@ func NewClient(cfg Config) *Client {
 		Timeout:   30 * time.Second,
 		KeepAlive: 15 * time.Second,
 	}).DialContext
-	return &Client{cfg: cfg, httpClient: &http.Client{Transport: transport}}
+	return &Client{
+		cfg:        cfg,
+		httpClient: &http.Client{Transport: transport},
+		retrySleep: time.Sleep,
+	}
 }
 
 // requestMessage is the per-message shape expected by the Anthropic API.
@@ -517,10 +522,13 @@ func (c *Client) Stream(ctx context.Context, systemPrompt string, messages []sto
 
 	const maxAttempts = 3
 	var (
-		resp    *http.Response
-		doErr   error
+		resp  *http.Response
+		doErr error
 	)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			c.retrySleep(200 * time.Millisecond * time.Duration(attempt))
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			c.cfg.BaseURL+messagesPath, bytes.NewReader(body))
 		if err != nil {

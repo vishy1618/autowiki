@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/suvish/autowiki/internal/store"
 )
@@ -69,6 +70,32 @@ func minimalSSE() string {
 		`data: {"type":"message_stop"}`,
 		"",
 	}, "\n")
+}
+
+func TestStream_SleepsBetweenRetries(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		hj, _ := w.(http.Hijacker)
+		conn, _, _ := hj.Hijack()
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	var slept []time.Duration
+	client := NewClient(Config{APIKey: "test", BaseURL: srv.URL})
+	client.retrySleep = func(d time.Duration) { slept = append(slept, d) }
+
+	client.Stream(context.Background(), "sys", []store.Message{{Role: "user", Content: "hi"}}, nil) //nolint:errcheck
+
+	if len(slept) == 0 {
+		t.Fatal("expected at least one sleep between retries, got none")
+	}
+	for i, d := range slept {
+		if d <= 0 {
+			t.Errorf("sleep[%d]: expected positive duration, got %v", i, d)
+		}
+	}
 }
 
 func TestStream_RetriesOnConnectionReset(t *testing.T) {
