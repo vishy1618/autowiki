@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isNearBottom, nextPinnedState } from "./scrollLock";
+import { isNearBottom, pinnedOnWheel, pinnedOnScroll } from "./scrollLock";
 
 describe("isNearBottom", () => {
   it("returns true when scrolled exactly to the bottom", () => {
@@ -31,24 +31,29 @@ describe("isNearBottom", () => {
   });
 });
 
-describe("nextPinnedState", () => {
-  it("unpins on a user gesture regardless of scroll position", () => {
-    expect(nextPinnedState({ userGesture: true, nearBottom: true, currentlyPinned: true })).toBe(false);
+describe("pinnedOnWheel", () => {
+  it("unpins when the wheel delta is upward (negative)", () => {
+    expect(pinnedOnWheel(-1, true)).toBe(false);
   });
 
-  it("re-pins on scroll when near bottom", () => {
-    expect(nextPinnedState({ userGesture: false, nearBottom: true, currentlyPinned: false })).toBe(true);
+  it("leaves state unchanged when wheel delta is downward (positive)", () => {
+    expect(pinnedOnWheel(1, true)).toBe(true);
+    expect(pinnedOnWheel(1, false)).toBe(false);
   });
 
-  it("keeps pinned state when not near bottom and no gesture", () => {
-    expect(nextPinnedState({ userGesture: false, nearBottom: false, currentlyPinned: true })).toBe(true);
+  it("leaves state unchanged when wheel delta is zero", () => {
+    expect(pinnedOnWheel(0, true)).toBe(true);
+    expect(pinnedOnWheel(0, false)).toBe(false);
+  });
+});
+
+describe("pinnedOnScroll", () => {
+  it("pins when near the bottom", () => {
+    expect(pinnedOnScroll(true, false)).toBe(true);
   });
 
-  it("keeps unpinned when not near bottom and no gesture", () => {
-    expect(nextPinnedState({ userGesture: false, nearBottom: false, currentlyPinned: false })).toBe(false);
-  });
-
-  it("unpins on a gesture even when not near bottom", () => {
-    expect(nextPinnedState({ userGesture: true, nearBottom: false, currentlyPinned: false })).toBe(false);
+  it("leaves state unchanged when not near the bottom", () => {
+    expect(pinnedOnScroll(false, true)).toBe(true);
+    expect(pinnedOnScroll(false, false)).toBe(false);
   });
 });

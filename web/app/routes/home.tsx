@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatRelative } from "../utils/formatRelative";
-import { isNearBottom, nextPinnedState } from "./scrollLock";
+import { isNearBottom, pinnedOnWheel, pinnedOnScroll } from "./scrollLock";
 import { useVisibilityRefresh } from "../hooks/useVisibilityRefresh";
 import { useChatHistory } from "../hooks/useChatHistory";
 import { useChatStream } from "../hooks/useChatStream";
@@ -98,34 +98,27 @@ export default function Home() {
 
   useEffect(() => {
     if (pinnedRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      bottomRef.current?.scrollIntoView({ behavior: "instant" });
     }
   }, [messages]);
 
   useEffect(() => {
     const el = threadRef.current;
     if (!el) return;
+    function onWheel(e: WheelEvent) {
+      pinnedRef.current = pinnedOnWheel(e.deltaY, pinnedRef.current);
+    }
     function onScroll() {
-      pinnedRef.current = nextPinnedState({
-        userGesture: false,
-        nearBottom: isNearBottom(el!.scrollTop, el!.scrollHeight, el!.clientHeight),
-        currentlyPinned: pinnedRef.current,
-      });
+      pinnedRef.current = pinnedOnScroll(
+        isNearBottom(el!.scrollTop, el!.scrollHeight, el!.clientHeight),
+        pinnedRef.current,
+      );
     }
-    function onUserGesture() {
-      pinnedRef.current = nextPinnedState({
-        userGesture: true,
-        nearBottom: false,
-        currentlyPinned: pinnedRef.current,
-      });
-    }
+    el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("scroll", onScroll, { passive: true });
-    el.addEventListener("wheel", onUserGesture, { passive: true });
-    el.addEventListener("touchstart", onUserGesture, { passive: true });
     return () => {
+      el.removeEventListener("wheel", onWheel);
       el.removeEventListener("scroll", onScroll);
-      el.removeEventListener("wheel", onUserGesture);
-      el.removeEventListener("touchstart", onUserGesture);
     };
   }, []);
 
