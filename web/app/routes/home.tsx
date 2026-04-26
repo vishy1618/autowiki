@@ -296,7 +296,13 @@ export default function Home() {
                   </span>
                 )}
                 <span style={styles.chipName}>{att.file.name}</span>
-                {att.uploading && <span style={styles.chipStatus}>↑</span>}
+                {att.uploading && (
+                  <span
+                    role="progressbar"
+                    aria-label="Uploading"
+                    className="upload-spinner"
+                  />
+                )}
                 {!att.uploading && (
                   <button
                     onClick={() => dismissAttachment(att.localId)}
@@ -803,10 +809,6 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: "ellipsis",
     whiteSpace: "nowrap" as const,
     flex: 1,
-  },
-  chipStatus: {
-    fontSize: "0.75rem",
-    color: "#888",
   },
   chipDismiss: {
     background: "none",

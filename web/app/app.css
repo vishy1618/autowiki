@@ -90,6 +90,20 @@ body {
 .md-table-wrap { overflow-x: auto; margin-bottom: 1rem; }
 .md-table-wrap table { margin-bottom: 0; }
 
+/* Upload spinner */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.upload-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #ccc;
+  border-top-color: #555;
+  flex-shrink: 0;
+  animation: spin 0.7s linear infinite;
+}
+
 /* Chat bubble responsive max-width */
 .chat-bubble { max-width: 75%; }
 @media (max-width: 640px) {

@@ -405,6 +405,23 @@ describe("Home — chat UI", () => {
     );
   });
 
+  it("shows a spinner (not an arrow) while attachment is uploading", async () => {
+    let resolveUpload!: (r: Response) => void;
+    const uploadPending = new Promise<Response>((res) => { resolveUpload = res; });
+    mockFetch({ "/api/attachments": [uploadPending] });
+    const user = userEvent.setup();
+    renderHome();
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
+    );
+    const fileInput = screen.getByTestId("file-input") as HTMLInputElement;
+    await user.upload(fileInput, new File(["data"], "photo.png", { type: "image/png" }));
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    expect(screen.queryByText("↑")).not.toBeInTheDocument();
+    resolveUpload(new Response(JSON.stringify({ path: "_attachments/photo.png" }), { status: 200 }));
+    await waitFor(() => expect(screen.queryByRole("progressbar")).not.toBeInTheDocument());
+  });
+
   it("does not send on Enter while an attachment is uploading", async () => {
     let resolveUpload!: (r: Response) => void;
     const uploadPending = new Promise<Response>((res) => { resolveUpload = res; });
