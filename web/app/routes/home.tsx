@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatRelative } from "../utils/formatRelative";
-import { isNearBottom } from "./scrollLock";
+import { isNearBottom, nextPinnedState } from "./scrollLock";
 import { useVisibilityRefresh } from "../hooks/useVisibilityRefresh";
 import { useChatHistory } from "../hooks/useChatHistory";
 import { useChatStream } from "../hooks/useChatStream";
@@ -106,10 +106,27 @@ export default function Home() {
     const el = threadRef.current;
     if (!el) return;
     function onScroll() {
-      pinnedRef.current = isNearBottom(el!.scrollTop, el!.scrollHeight, el!.clientHeight);
+      pinnedRef.current = nextPinnedState({
+        userGesture: false,
+        nearBottom: isNearBottom(el!.scrollTop, el!.scrollHeight, el!.clientHeight),
+        currentlyPinned: pinnedRef.current,
+      });
+    }
+    function onUserGesture() {
+      pinnedRef.current = nextPinnedState({
+        userGesture: true,
+        nearBottom: false,
+        currentlyPinned: pinnedRef.current,
+      });
     }
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    el.addEventListener("wheel", onUserGesture, { passive: true });
+    el.addEventListener("touchstart", onUserGesture, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onUserGesture);
+      el.removeEventListener("touchstart", onUserGesture);
+    };
   }, []);
 
   useEffect(() => {
@@ -422,7 +439,7 @@ const MessageThread = memo(function MessageThread({
   sentinelRef,
 }: MessageThreadProps) {
   return (
-    <div ref={threadRef} style={styles.thread}>
+    <div ref={threadRef} data-testid="message-thread" style={styles.thread}>
       {hasMoreHistory && <div ref={sentinelRef} />}
       {historyLoading && <p style={styles.historyLoading}>Loading…</p>}
       {messages.length === 0 && !historyLoading && (

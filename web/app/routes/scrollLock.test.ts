@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isNearBottom } from "./scrollLock";
+import { isNearBottom, nextPinnedState } from "./scrollLock";
 
 describe("isNearBottom", () => {
   it("returns true when scrolled exactly to the bottom", () => {
@@ -28,5 +28,27 @@ describe("isNearBottom", () => {
 
   it("returns true on an empty container (all zeros)", () => {
     expect(isNearBottom(0, 0, 0)).toBe(true);
+  });
+});
+
+describe("nextPinnedState", () => {
+  it("unpins on a user gesture regardless of scroll position", () => {
+    expect(nextPinnedState({ userGesture: true, nearBottom: true, currentlyPinned: true })).toBe(false);
+  });
+
+  it("re-pins on scroll when near bottom", () => {
+    expect(nextPinnedState({ userGesture: false, nearBottom: true, currentlyPinned: false })).toBe(true);
+  });
+
+  it("keeps pinned state when not near bottom and no gesture", () => {
+    expect(nextPinnedState({ userGesture: false, nearBottom: false, currentlyPinned: true })).toBe(true);
+  });
+
+  it("keeps unpinned when not near bottom and no gesture", () => {
+    expect(nextPinnedState({ userGesture: false, nearBottom: false, currentlyPinned: false })).toBe(false);
+  });
+
+  it("unpins on a gesture even when not near bottom", () => {
+    expect(nextPinnedState({ userGesture: true, nearBottom: false, currentlyPinned: false })).toBe(false);
   });
 });
