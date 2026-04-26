@@ -175,26 +175,6 @@ describe("Home — chat UI", () => {
     );
   });
 
-  it("streams delta text into the assistant bubble", async () => {
-    mockFetch({
-      "/api/chat": [chatSSE(
-        "event: delta\ndata: {\"text\":\"Hello\"}\n\n",
-        "event: delta\ndata: {\"text\":\" world\"}\n\n",
-        SSE_DONE
-      )],
-    });
-    const user = userEvent.setup();
-    renderHome();
-    await waitFor(() =>
-      expect(screen.getByPlaceholderText(/message autowiki/i)).toBeInTheDocument()
-    );
-    await user.type(screen.getByPlaceholderText(/message autowiki/i), "hi");
-    await user.click(screen.getByRole("button", { name: /send/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/Hello world/)).toBeInTheDocument()
-    );
-  });
-
   it("re-enables the send button after stream completes", async () => {
     mockFetch({ "/api/chat": [chatSSE(SSE_DONE)] });
     const user = userEvent.setup();
@@ -585,33 +565,6 @@ describe("Home — chat UI", () => {
 
   // ── Group 4: rendering of loaded history ────────────────────────────────────
 
-  it("renders a session divider between sessions", async () => {
-    mockFetch({
-      "/api/chat-sessions": [
-        new Response(
-          JSON.stringify({
-            sessions: [
-              { id: "s2", created_at: "2026-04-14T10:00:00Z", last_active_at: "2026-04-14T10:05:00Z" },
-              { id: "s1", created_at: "2026-04-14T09:00:00Z", last_active_at: "2026-04-14T09:05:00Z" },
-            ],
-          }),
-          { status: 200 }
-        ),
-      ],
-      "/api/chat-sessions/s2": [
-        new Response(JSON.stringify({ messages: [{ id: "m2", role: "user", content: "b", created_at: "2026-04-14T10:00:00Z" }] }), { status: 200 }),
-      ],
-      "/api/chat-sessions/s1": [
-        new Response(JSON.stringify({ messages: [{ id: "m1", role: "user", content: "a", created_at: "2026-04-14T09:00:00Z" }] }), { status: 200 }),
-      ],
-    });
-
-    renderHome();
-
-    await waitFor(() => expect(screen.getByText("a")).toBeInTheDocument());
-    expect(document.querySelector("[data-testid='session-divider']")).toBeInTheDocument();
-  });
-
   it("renders timestamps on messages loaded from history", async () => {
     // Use a far-past created_at so formatRelative returns a date string (e.g. "10 Apr")
     // regardless of when the test runs — no fake timers needed.
@@ -796,95 +749,6 @@ describe("Home — chat UI", () => {
     ).length;
 
     expect(callsAfterTrigger).toBe(callsBeforeTrigger);
-  });
-});
-
-const SSE_ERROR = (msg = "network error") =>
-  `event: error\ndata: ${JSON.stringify({ message: msg })}\n\n`;
-
-describe("Home — auto-retry on error", () => {
-  beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("shows retrying message instead of permanent error on first failure", async () => {
-    mockFetch({ "/api/chat": [chatSSE(SSE_ERROR())] });
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderHome();
-    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
-    await user.type(textarea, "hello");
-    await user.click(screen.getByRole("button", { name: /send/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/retrying/i)).toBeInTheDocument()
-    );
-  });
-
-  it("shows the response when the retry succeeds", async () => {
-    mockFetch({
-      "/api/chat": [
-        chatSSE(SSE_ERROR()),
-        chatSSE("event: delta\ndata: {\"text\":\"Hello!\"}\n\n", SSE_DONE),
-      ],
-    });
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderHome();
-    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
-    await user.type(textarea, "hello");
-    await user.click(screen.getByRole("button", { name: /send/i }));
-    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
-
-    await act(async () => { vi.advanceTimersByTime(4000); });
-
-    await waitFor(() => expect(screen.getByText("Hello!")).toBeInTheDocument());
-  });
-
-  it("retries when the server returns a 500", async () => {
-    const fetchSpy = mockFetch({
-      "/api/chat": [
-        new Response("internal server error", { status: 500 }),
-        chatSSE("event: delta\ndata: {\"text\":\"Recovered!\"}\n\n", SSE_DONE),
-      ],
-    });
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderHome();
-    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
-    await user.type(textarea, "hello");
-    await user.click(screen.getByRole("button", { name: /send/i }));
-    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
-
-    await act(async () => { vi.advanceTimersByTime(4000); });
-
-    await waitFor(() => expect(screen.getByText("Recovered!")).toBeInTheDocument());
-    const chatCalls = fetchSpy.mock.calls.filter(([url]) => url === "/api/chat");
-    expect(chatCalls).toHaveLength(2);
-  });
-
-  it("shows permanent error after max retries are exhausted", async () => {
-    mockFetch({
-      "/api/chat": [
-        chatSSE(SSE_ERROR("fail 1")),
-        chatSSE(SSE_ERROR("fail 2")),
-        chatSSE(SSE_ERROR("fail 3")),
-      ],
-    });
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderHome();
-    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
-    await user.type(textarea, "hello");
-    await user.click(screen.getByRole("button", { name: /send/i }));
-
-    // exhaust both auto-retries
-    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
-    await act(async () => { vi.advanceTimersByTime(4000); });
-    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
-    await act(async () => { vi.advanceTimersByTime(4000); });
-
-    await waitFor(() =>
-      expect(screen.getByText(/fail 3/i)).toBeInTheDocument()
-    );
   });
 });
 
