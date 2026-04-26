@@ -4,6 +4,10 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatRelative } from "../utils/formatRelative";
 import { isNearBottom } from "./scrollLock";
+import { useVisibilityRefresh } from "../hooks/useVisibilityRefresh";
+import { useChatHistory } from "../hooks/useChatHistory";
+import { useChatStream } from "../hooks/useChatStream";
+import type { ChatItem, Message, VaultChange } from "../hooks/useChatHistory";
 import type { Route } from "./+types/home";
 
 export function meta({}: Route.MetaArgs) {
@@ -18,10 +22,6 @@ interface DriveStatusData {
   last_error: string | null;
 }
 
-interface VaultChange {
-  path: string;
-}
-
 interface PendingAttachment {
   localId: string;       // client-side id for tracking
   file: File;
@@ -30,23 +30,10 @@ interface PendingAttachment {
   previewUrl?: string;   // object URL for images
 }
 
-interface Message {
-  kind?: "message";
-  role: "user" | "assistant";
-  content: string;
-  streaming?: boolean;
-  statusMessage?: string;
-  vaultChanges?: VaultChange[];
+// Local Message augments the shared type with attachment display state.
+interface LocalMessage extends Message {
   attachments?: PendingAttachment[];
-  createdAt?: string; // ISO string; absent while streaming
 }
-
-interface SessionDivider {
-  kind: "divider";
-  id: string;
-}
-
-type ChatItem = Message | SessionDivider;
 
 function isMessage(item: ChatItem): item is Message {
   return "role" in item;
@@ -55,23 +42,23 @@ function isMessage(item: ChatItem): item is Message {
 export default function Home() {
   const navigate = useNavigate();
   const [ready, setReady] = useState(false);
-  const [messages, setMessages] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [driveStatus, setDriveStatus] = useState<DriveStatusData | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [historyOffset, setHistoryOffset] = useState(0);
-  const [hasMoreHistory, setHasMoreHistory] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
   const retryRef = useRef<{ text: string; attachments: PendingAttachment[]; attempt: number } | null>(null);
+
+  const { messages, setMessages,
+    historyOffset, hasMoreHistory, historyLoading,
+    loadHistory, latestActivityRef, sentinelRef,
+  } = useChatHistory({ ready });
+
+  const { sending, error, doStream } = useChatStream({ setMessages, navigate });
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -107,59 +94,7 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  const HISTORY_LIMIT = 3;
-
-  async function loadHistory(offset: number, prepend: boolean) {
-    setHistoryLoading(true);
-    try {
-      const r = await fetch(`/api/chat-sessions?limit=${HISTORY_LIMIT}&offset=${offset}`);
-      if (!r.ok) return;
-      const { sessions } = await r.json() as {
-        sessions: Array<{ id: string; created_at: string; last_active_at: string }>;
-      };
-      const more = sessions.length === HISTORY_LIMIT;
-      setHasMoreHistory(more);
-      setHistoryOffset(offset + sessions.length);
-      if (!sessions.length) return;
-      // API returns newest-first; reverse so we display oldest-first.
-      const oldest = [...sessions].reverse();
-      const items: ChatItem[] = [];
-      for (let i = 0; i < oldest.length; i++) {
-        const session = oldest[i];
-        const mr = await fetch(`/api/chat-sessions/${session.id}`);
-        if (!mr.ok) continue;
-        const { messages: msgs } = await mr.json() as {
-          messages: Array<{ id: string; role: "user" | "assistant"; content: string; created_at: string; vault_changes?: string[] }>;
-        };
-        if (i > 0 || prepend) {
-          items.push({ kind: "divider", id: `divider-${session.id}` });
-        }
-        for (const msg of msgs) {
-          items.push({
-            role: msg.role,
-            content: msg.content,
-            createdAt: msg.created_at,
-            vaultChanges: msg.vault_changes?.map((path) => ({ path })),
-          });
-        }
-      }
-      if (prepend) {
-        setMessages((prev) => [...items, ...prev]);
-      } else {
-        setMessages(items);
-      }
-    } catch {
-      // silently ignore history load failures
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (!ready) return;
-    loadHistory(0, false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
+  useVisibilityRefresh({ ready, latestActivityRef, onRefresh: () => loadHistory(0, false) });
 
   useEffect(() => {
     if (pinnedRef.current) {
@@ -191,7 +126,6 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasMoreHistory, historyLoading, historyOffset]);
 
-  // Wrapper around fetch that redirects to /login on any 401 response.
   function apiFetch(url: string, init?: RequestInit) {
     return fetch(url, init).then((r) => {
       if (r.status === 401) navigate("/login", { replace: true });
@@ -258,159 +192,6 @@ export default function Home() {
       if (att?.previewUrl) URL.revokeObjectURL(att.previewUrl);
       return prev.filter((a) => a.localId !== localId);
     });
-  }
-
-  const RETRY_DELAY_MS = 4000;
-  const MAX_AUTO_RETRIES = 2;
-
-  async function doStream(text: string, attachments: PendingAttachment[], attempt: number) {
-    setError(null);
-    setSending(true);
-
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content: "", streaming: true },
-    ]);
-
-    try {
-      const body = new URLSearchParams({ message: text });
-      for (const att of attachments) {
-        body.append("attachment_ids", att.path!);
-      }
-      const resp = await apiFetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      });
-
-      if (!resp.ok) {
-        if (resp.status >= 500 && attempt < MAX_AUTO_RETRIES) {
-          setError("Connection hiccup, retrying automatically…");
-          setTimeout(() => doStream(text, attachments, attempt + 1), RETRY_DELAY_MS);
-          return;
-        }
-        const bodyText = (await resp.text().catch(() => "")).trim();
-        setMessages((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          if (last && isMessage(last) && last.role === "assistant" && last.streaming) {
-            next[next.length - 1] = { ...last, content: bodyText, streaming: false, createdAt: new Date().toISOString() };
-          }
-          return next;
-        });
-        return;
-      }
-      if (!resp.body) {
-        throw new Error(`Server returned ${resp.status}`);
-      }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let lastEventWasStatus = false;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        let currentEvent = "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            const data = line.slice(6).trim();
-            if (currentEvent === "status") {
-                try {
-                  const { message } = JSON.parse(data) as { message: string };
-                  setMessages((prev) => {
-                    const next = [...prev];
-                    const last = next[next.length - 1];
-                    if (last && isMessage(last) && last.role === "assistant") {
-                      next[next.length - 1] = { ...last, statusMessage: message };
-                    }
-                    return next;
-                  });
-                  lastEventWasStatus = true;
-                } catch {
-                  // ignore malformed status
-                }
-              } else if (currentEvent === "delta") {
-              try {
-                const { text } = JSON.parse(data) as { text: string };
-                const prependNewline = lastEventWasStatus;
-                lastEventWasStatus = false;
-                setMessages((prev) => {
-                  const next = [...prev];
-                  const last = next[next.length - 1];
-                  if (last && isMessage(last) && last.role === "assistant") {
-                    const prefix =
-                      prependNewline && last.content && !/\s$/.test(last.content)
-                        ? "\n\n"
-                        : "";
-                    next[next.length - 1] = {
-                      ...last,
-                      statusMessage: undefined,
-                      content: last.content + prefix + text,
-                    };
-                  }
-                  return next;
-                });
-              } catch {
-                // ignore malformed delta
-              }
-            } else if (currentEvent === "vault") {
-              try {
-                const { changes } = JSON.parse(data) as { changes: VaultChange[] };
-                setMessages((prev) => {
-                  const next = [...prev];
-                  const last = next[next.length - 1];
-                  if (last && isMessage(last) && last.role === "assistant") {
-                    next[next.length - 1] = { ...last, vaultChanges: changes };
-                  }
-                  return next;
-                });
-              } catch {
-                // ignore malformed vault event
-              }
-            } else if (currentEvent === "error") {
-              try {
-                const { message } = JSON.parse(data) as { message: string };
-                if (attempt < MAX_AUTO_RETRIES) {
-                  setError("Connection hiccup, retrying automatically…");
-                  setTimeout(() => doStream(text, attachments, attempt + 1), RETRY_DELAY_MS);
-                } else {
-                  setError(message);
-                }
-              } catch {
-                setError("An error occurred");
-              }
-            }
-            currentEvent = "";
-          }
-        }
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
-    } finally {
-      // Finalise or discard the streaming bubble.
-      setMessages((prev) => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        if (last && isMessage(last) && last.role === "assistant" && last.streaming) {
-          if (last.content || last.vaultChanges?.length) {
-            next[next.length - 1] = { ...last, statusMessage: undefined, streaming: false, createdAt: new Date().toISOString() };
-          } else {
-            next.pop();
-          }
-        }
-        return next;
-      });
-      setSending(false);
-    }
   }
 
   async function sendMessage() {

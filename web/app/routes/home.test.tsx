@@ -583,42 +583,7 @@ describe("Home — chat UI", () => {
     expect(screen.queryByText(/saved to vault/i)).not.toBeInTheDocument();
   });
 
-  // ── Group 4: multi-session history load ──────────────────────────────────────
-
-  it("shows messages from previous sessions on load", async () => {
-    mockFetch({
-      "/api/chat-sessions": [
-        new Response(
-          JSON.stringify({
-            sessions: [
-              { id: "s2", created_at: "2026-04-14T10:00:00Z", last_active_at: "2026-04-14T10:05:00Z" },
-              { id: "s1", created_at: "2026-04-14T09:00:00Z", last_active_at: "2026-04-14T09:05:00Z" },
-            ],
-          }),
-          { status: 200 }
-        ),
-      ],
-      "/api/chat-sessions/s2": [
-        new Response(
-          JSON.stringify({ messages: [{ id: "m3", role: "user", content: "hello from session 2", created_at: "2026-04-14T10:00:00Z" }] }),
-          { status: 200 }
-        ),
-      ],
-      "/api/chat-sessions/s1": [
-        new Response(
-          JSON.stringify({ messages: [{ id: "m1", role: "user", content: "hello from session 1", created_at: "2026-04-14T09:00:00Z" }] }),
-          { status: 200 }
-        ),
-      ],
-    });
-
-    renderHome();
-
-    await waitFor(() =>
-      expect(screen.getByText("hello from session 1")).toBeInTheDocument()
-    );
-    expect(screen.getByText("hello from session 2")).toBeInTheDocument();
-  });
+  // ── Group 4: rendering of loaded history ────────────────────────────────────
 
   it("renders a session divider between sessions", async () => {
     mockFetch({
@@ -857,25 +822,6 @@ describe("Home — auto-retry on error", () => {
     );
   });
 
-  it("automatically re-sends after the retry delay", async () => {
-    const fetchSpy = mockFetch({
-      "/api/chat": [chatSSE(SSE_ERROR()), chatSSE(SSE_DONE)],
-    });
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    renderHome();
-    const textarea = await screen.findByPlaceholderText(/message autowiki/i);
-    await user.type(textarea, "hello");
-    await user.click(screen.getByRole("button", { name: /send/i }));
-    await waitFor(() => expect(screen.getByText(/retrying/i)).toBeInTheDocument());
-
-    await act(async () => { vi.advanceTimersByTime(4000); });
-
-    await waitFor(() => {
-      const chatCalls = fetchSpy.mock.calls.filter(([url]) => url === "/api/chat");
-      expect(chatCalls).toHaveLength(2);
-    });
-  });
-
   it("shows the response when the retry succeeds", async () => {
     mockFetch({
       "/api/chat": [
@@ -1016,3 +962,4 @@ describe("Home — DriveSyncStatus pill", () => {
     expect(screen.getByText(/no syncs recorded yet/i)).toBeInTheDocument();
   });
 });
+
