@@ -617,6 +617,7 @@ const styles: Record<string, React.CSSProperties> = {
   thread: {
     flex: 1,
     overflowY: "auto",
+    overflowX: "hidden",
     padding: "1.5rem",
     display: "flex",
     flexDirection: "column",
@@ -633,6 +634,8 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "12px",
     lineHeight: 1.6,
     fontSize: "1.0625rem",
+    wordBreak: "break-word",
+    minWidth: 0,
   },
   userBubble: {
     alignSelf: "flex-end",
