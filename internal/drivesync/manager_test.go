@@ -295,6 +295,80 @@ func TestSyncManager_Poller_DoesNotReDownloadAfterSuccessfulDownload(t *testing.
 	}
 }
 
+func TestSyncManager_Poller_DoesNotReDownloadWhileDownloadInFlight(t *testing.T) {
+	// Arrange — the worker is blocked mid-download (held by a channel gate).
+	// A second poll for the same change arrives while the first download is still
+	// in progress. The second poll must not queue a second download job.
+	vaultDir := t.TempDir()
+	db := openTestPebble(t)
+	st := drivesync.NewState(db)
+	_ = st.SetPageToken("tok-1")
+	_ = st.SetRootFolderID("vault-root-id")
+
+	const driveModTime = "2099-01-01T00:00:00Z"
+
+	downloadStarted := make(chan struct{}, 1) // buffered: handler can signal before test receives
+	releaseDownload := make(chan struct{})    // closed to unblock the download handler
+	downloadCount := 0
+
+	srv, httpClient := newFakeDrive(t, map[string]http.HandlerFunc{
+		"/drive/v3/changes": func(w http.ResponseWriter, r *http.Request) {
+			jsonResponse(w, map[string]any{
+				"newStartPageToken": "tok-2",
+				"changes": []map[string]any{{
+					"fileId":  "drive-file-id",
+					"removed": false,
+					"file": map[string]any{
+						"name":         "notes.md",
+						"parents":      []string{"vault-root-id"},
+						"modifiedTime": driveModTime,
+					},
+				}},
+			})
+		},
+		"/drive/v3/files": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("alt") == "media" {
+				downloadCount++
+				downloadStarted <- struct{}{} // always succeeds (buffered)
+				<-releaseDownload             // block until test releases us
+				w.Write([]byte("content"))
+				return
+			}
+			jsonResponse(w, map[string]any{"files": []any{}})
+		},
+	})
+	defer srv.Close()
+
+	sm := drivesync.NewWithHTTPClient(testCfg, db, vaultDir, httpClient)
+	drivesync.SetVaultFolderIDForTest(sm, "vault-root-id")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sm.Reconcile(ctx) // start worker
+
+	// First poll — queues the download; worker starts downloading and blocks.
+	drivesync.PollOnceForTest(sm, ctx)
+	<-downloadStarted // wait until worker is inside the download handler
+
+	// Second poll — download is still in flight; must not queue a second job.
+	drivesync.PollOnceForTest(sm, ctx)
+
+	// Release the first download and let everything drain.
+	close(releaseDownload)
+	cancel()
+	sm.Shutdown()
+
+	if downloadCount != 1 {
+		t.Errorf("expected 1 download, got %d (second poll re-queued an in-flight download)", downloadCount)
+	}
+	entry, err := st.GetFile("notes.md")
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("expected notes.md in state after download")
+	}
+}
+
 func TestSyncManager_Poller_SkipsDownloadWhenDriveModTimeMatchesState(t *testing.T) {
 	// Arrange — file is in State with a matching DriveModTime; Drive reports the same modifiedTime.
 	// No download should occur.

@@ -42,6 +42,8 @@ type SyncManager struct {
 	wg                 sync.WaitGroup
 	workerOnce         sync.Once
 	shutdownOnce       sync.Once
+	startMu            sync.Mutex // guards watcher/watcherDone/isShutdown
+	isShutdown         bool
 	watcher            *Watcher
 	watcherDone        chan struct{}
 	watcherDebounce    time.Duration // 0 → use default (2s)
@@ -50,6 +52,7 @@ type SyncManager struct {
 	vaultFolderID      string        // cached after Start(); never changes during process lifetime
 	bgCancel           context.CancelFunc
 	pendingDownloads   sync.Map // relPath → struct{}; suppresses fsnotify echo after Drive download
+	inFlightDownloads  sync.Map // relPath → struct{}; prevents double-queuing a download
 }
 
 // New returns a SyncManager ready to Start. The DriveClient is built lazily
@@ -216,11 +219,22 @@ func (sm *SyncManager) startWithClient(ctx context.Context) {
 		slog.Error("drive sync: starting watcher", "err", err)
 		return
 	}
+
+	// Guard watcher creation with startMu so Shutdown() can atomically observe
+	// whether the watcher has been started, regardless of concurrency.
+	sm.startMu.Lock()
+	if sm.isShutdown {
+		sm.startMu.Unlock()
+		w.Close()
+		return
+	}
+	done := make(chan struct{})
 	sm.watcher = w
-	sm.watcherDone = make(chan struct{})
+	sm.watcherDone = done
+	sm.startMu.Unlock()
 
 	go func() {
-		defer close(sm.watcherDone)
+		defer close(done)
 		for event := range w.Events() {
 			sm.handleFileEvent(event)
 		}
@@ -322,12 +336,20 @@ func (sm *SyncManager) reconcile(ctx context.Context) {
 // Shutdown stops all background goroutines and drains the sync worker.
 // Safe to call multiple times.
 func (sm *SyncManager) Shutdown() {
+	// Set isShutdown and capture the watcher under the lock so we have a
+	// consistent view of whether startWithClient has (or will) start it.
+	sm.startMu.Lock()
+	sm.isShutdown = true
+	watcher := sm.watcher
+	watcherDone := sm.watcherDone
+	sm.startMu.Unlock()
+
 	if sm.bgCancel != nil {
 		sm.bgCancel()
 	}
-	if sm.watcher != nil {
-		sm.watcher.Close()
-		<-sm.watcherDone
+	if watcher != nil {
+		watcher.Close()
+		<-watcherDone
 	}
 	sm.shutdownOnce.Do(func() { close(sm.syncCh) })
 	sm.wg.Wait()
@@ -463,6 +485,12 @@ func (sm *SyncManager) processChange(ctx context.Context, change DriveChange) {
 		slog.Debug("drive sync: change has newer version", "path", relPath, "stored", existing.DriveModTime, "incoming", change.ModifiedTime)
 	}
 
+	// Skip if a download for this file is already in the worker queue or being processed.
+	if _, loaded := sm.inFlightDownloads.LoadOrStore(relPath, struct{}{}); loaded {
+		slog.Debug("drive sync: change skipped — download already in flight", "path", relPath)
+		return
+	}
+
 	localPath := filepath.Join(sm.vaultPath, filepath.FromSlash(relPath))
 	slog.Info("drive sync: queuing download from Drive", "path", relPath, "driveID", change.FileID)
 	sm.syncCh <- syncJob{download: true, relPath: relPath, driveFileID: change.FileID, localPath: localPath, driveModTime: change.ModifiedTime}
@@ -496,6 +524,8 @@ func (sm *SyncManager) startWorkerOnce() {
 
 func (sm *SyncManager) processJob(job syncJob) {
 	if job.download {
+		defer sm.inFlightDownloads.Delete(job.relPath)
+
 		// Conflict resolution: if local file exists, decide which side wins.
 		if info, err := os.Stat(job.localPath); err == nil {
 			var driveModTime time.Time
