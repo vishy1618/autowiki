@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "develop": {
+      "source": "git@github.com:contentstack/agent-skills.git",
+      "sourceType": "git",
+      "skillPath": "skills/develop/SKILL.md",
+      "computedHash": "75d349a1778dde1ddd308dd5801807653a450a2c91ade2fab689641b36896c1e"
+    }
+  }
+}
