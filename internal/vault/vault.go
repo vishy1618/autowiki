@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -416,6 +418,83 @@ func (m *Manager) ReadFilePartial(path string, maxChars int) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// contentDisposition returns a Content-Disposition header value for the given
+// filename. Plain ASCII filenames (letters, digits, '.', '-', '_') use the
+// quoted-string form; all others use RFC 5987 UTF-8 percent-encoding.
+func contentDisposition(filename string) string {
+	plain := true
+	for _, r := range filename {
+		if !isAttrChar(r) {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return fmt.Sprintf(`attachment; filename="%s"`, filename)
+	}
+	return "attachment; filename*=UTF-8''" + rfc5987Encode(filename)
+}
+
+// isAttrChar reports whether r is safe for an unquoted ASCII filename token
+// (RFC 5987 attr-char: ALPHA / DIGIT / "!" / "#" / "$" / "&" / "+" / "-" /
+// "." / "^" / "_" / "`" / "|" / "~"). We use a conservative subset.
+func isAttrChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_'
+}
+
+// rfc5987Encode percent-encodes a UTF-8 string per RFC 5987, leaving
+// attr-char bytes unencoded.
+func rfc5987Encode(s string) string {
+	var b strings.Builder
+	for _, bt := range []byte(s) {
+		if bt < 128 && isAttrChar(rune(bt)) {
+			b.WriteByte(bt)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", bt)
+		}
+	}
+	return b.String()
+}
+
+// ServeFile resolves relPath within the vault and streams the file to w.
+// Path traversal attempts receive 400; missing files receive 404.
+func (m *Manager) ServeFile(w http.ResponseWriter, r *http.Request, relPath string) {
+	abs, err := m.safePath(relPath)
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+
+	f, err := os.Open(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	ext := filepath.Ext(relPath)
+	ct := mime.TypeByExtension(ext)
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+
+	filename := filepath.Base(relPath)
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Disposition", contentDisposition(filename))
+	http.ServeContent(w, r, filename, stat.ModTime(), f)
 }
 
 // defaultSchema is the template written to schema.md when it does not exist.

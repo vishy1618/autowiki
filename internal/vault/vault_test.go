@@ -2,6 +2,8 @@ package vault_test
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -830,3 +832,112 @@ func TestManager_ReadAttachmentMeta_SidecarStoredNextToFile(t *testing.T) {
 		t.Fatalf("sidecar is not valid JSON: %v", err)
 	}
 }
+
+// ServeFile — Content-Type
+
+func TestManager_ServeFile_ContentType(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+		wantCT   string
+	}{
+		{
+			name:     "pdf extension gets application/pdf",
+			filename: "report.pdf",
+			wantCT:   "application/pdf",
+		},
+		{
+			name:     "unknown extension falls back to octet-stream",
+			filename: "binary.bin",
+			wantCT:   "application/octet-stream",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			m := vault.NewManager(dir)
+			writeFixture(t, dir, tt.filename, "data")
+
+			req := httptest.NewRequest(http.MethodGet, "/serve", nil)
+			w := httptest.NewRecorder()
+			m.ServeFile(w, req, tt.filename)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			ct := w.Header().Get("Content-Type")
+			if !strings.HasPrefix(ct, tt.wantCT) {
+				t.Errorf("Content-Type: want prefix %q, got %q", tt.wantCT, ct)
+			}
+		})
+	}
+}
+
+// ServeFile — error cases
+
+func TestManager_ServeFile_PathTraversalReturns400(t *testing.T) {
+	m := newManager(t)
+	req := httptest.NewRequest(http.MethodGet, "/serve", nil)
+	w := httptest.NewRecorder()
+
+	m.ServeFile(w, req, "../../etc/passwd")
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for path traversal, got %d", w.Code)
+	}
+}
+
+func TestManager_ServeFile_MissingFileReturns404(t *testing.T) {
+	m := newManager(t)
+	req := httptest.NewRequest(http.MethodGet, "/serve", nil)
+	w := httptest.NewRecorder()
+
+	m.ServeFile(w, req, "nonexistent.md")
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing file, got %d", w.Code)
+	}
+}
+
+func TestManager_ServeFile_DispositionHeader(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+		wantDisp string
+	}{
+		{
+			name:     "ascii filename uses plain form",
+			filename: "notes.md",
+			wantDisp: `attachment; filename="notes.md"`,
+		},
+		{
+			name:     "unicode filename uses RFC 5987 form",
+			filename: "日本語.md",
+			wantDisp: "attachment; filename*=UTF-8''%E6%97%A5%E6%9C%AC%E8%AA%9E.md",
+		},
+		{
+			name:     "filename with spaces uses RFC 5987 form",
+			filename: "my notes.md",
+			wantDisp: "attachment; filename*=UTF-8''my%20notes.md",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			m := vault.NewManager(dir)
+			writeFixture(t, dir, tt.filename, "content")
+
+			req := httptest.NewRequest(http.MethodGet, "/serve", nil)
+			w := httptest.NewRecorder()
+			m.ServeFile(w, req, tt.filename)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			if got := w.Header().Get("Content-Disposition"); got != tt.wantDisp {
+				t.Errorf("Content-Disposition: want %q, got %q", tt.wantDisp, got)
+			}
+		})
+	}
+}
+

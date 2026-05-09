@@ -77,6 +77,7 @@ func (s *Server) routes() {
 	s.mux.Handle("/api/chat-sessions/", mw.Require(chatsessions.NewHandler(s.chats)))
 	s.mux.Handle("/api/dream/run", mw.Require(dream.NewHandler(s.consolidate)))
 	s.mux.Handle("/api/drive/status", mw.Require(drivesync.NewStatusHandler(s.statusProvider)))
+	s.mux.Handle("/api/vault/files/", mw.Require(http.HandlerFunc(s.handleVaultFile)))
 
 	// All non-API routes serve the SPA unconditionally. Auth is enforced
 	// client-side; the server only protects /api/* data endpoints.
@@ -95,6 +96,15 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.cfg.ServerPort)
 	fmt.Printf("autowiki listening on %s\n", addr)
 	return http.ListenAndServe(addr, s)
+}
+
+func (s *Server) handleVaultFile(w http.ResponseWriter, r *http.Request) {
+	relPath := strings.TrimPrefix(r.URL.Path, "/api/vault/files/")
+	if relPath == "" {
+		http.Error(w, "path required", http.StatusBadRequest)
+		return
+	}
+	s.vault.ServeFile(w, r, relPath)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
