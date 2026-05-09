@@ -13,7 +13,19 @@ Inspired by [Andrej Karpathy's LLM Wiki pattern](https://x.com/karpathy/status/1
 - **Ask questions** — Claude searches your vault to answer from what you've already saved
 - **Chat history** — infinite-scroll timeline across all past sessions
 - **Nightly consolidation** — a "dream state" goroutine runs in a configurable UTC window (default 19–23 UTC ≈ 1–5 am IST) to reorganise and cross-link the vault
+- **Download files** — ask for a download link to any vault file; Claude responds with a clickable link; binary files (PDFs, images) are offered automatically
 - **Google Drive sync** — bidirectional sync keeps your vault backed up to Drive; status pill in the header shows live sync state
+
+## Downloading files
+
+Ask autowiki to give you a download link for any file in your vault:
+
+> "Can I download my notes.md?"
+> "Give me a download link for the Q1 report PDF."
+
+The assistant responds with a Markdown link that your browser downloads directly when clicked. For binary files (PDFs, images, and other non-text types) the assistant proactively offers a download link whenever you ask about the file — it assumes you want to save it locally. For text and Markdown files the link is only offered when you explicitly ask to download rather than read inline.
+
+Links are constructed as `/api/vault/files/<vault-relative-path>` and are served directly from the Go backend, auth-protected. Filenames with Unicode or spaces are handled correctly via RFC 5987 encoding in the `Content-Disposition` header.
 
 ## Google Drive sync
 
