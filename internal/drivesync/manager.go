@@ -577,6 +577,9 @@ func (sm *SyncManager) processJob(job syncJob) {
 func (sm *SyncManager) buildHTTPClient(ctx context.Context, refreshToken string) *http.Client {
 	tok := &oauth2.Token{RefreshToken: refreshToken}
 	base := sm.oauthCfg.TokenSource(ctx, tok)
-	pts := NewPersistingTokenSource(base, sm.tokenStore)
+	newSource := func(rt string) oauth2.TokenSource {
+		return sm.oauthCfg.TokenSource(ctx, &oauth2.Token{RefreshToken: rt})
+	}
+	pts := NewPersistingTokenSource(base, sm.tokenStore, newSource)
 	return oauth2.NewClient(ctx, pts)
 }
