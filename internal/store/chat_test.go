@@ -457,6 +457,41 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 		}
 	})
 
+	t.Run("GetRecentContext_BackfillsAcrossMultiplePriorSessions", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+
+		// Two older sessions with 5 messages each.
+		for range 2 {
+			sess, _ := cs.ResolveSession()
+			for i := range 5 {
+				_ = cs.AppendMessage(store.Message{SessionID: sess.ID, Role: "user", Content: fmt.Sprintf("old%d", i)})
+			}
+			stale := sess
+			stale.LastActiveAt = time.Now().Add(-31 * time.Minute)
+			_ = cs.UpdateSession(stale)
+		}
+
+		// Current session with 5 messages — need 20 more from 2 prior sessions.
+		current, _ := cs.ResolveSession()
+		for i := range 5 {
+			_ = cs.AppendMessage(store.Message{SessionID: current.ID, Role: "user", Content: fmt.Sprintf("new%d", i)})
+		}
+
+		msgs, err := cs.GetRecentContext(current.ID, 15)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// 5 current + 10 backfilled (from both prior sessions) = 15
+		if len(msgs) != 15 {
+			t.Errorf("expected 15 messages, got %d", len(msgs))
+		}
+		// Last message must be from the current session.
+		if msgs[len(msgs)-1].SessionID != current.ID {
+			t.Errorf("expected last message from current session, got %q", msgs[len(msgs)-1].SessionID)
+		}
+	})
+
 	t.Run("GetRecentContext_BackfillsFromPriorSessionAndReturnsChronologically", func(t *testing.T) {
 		cs := store.NewMemChatStore()
 
