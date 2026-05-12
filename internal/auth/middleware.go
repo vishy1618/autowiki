@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	rotateThreshold = 12 * time.Hour
+	rotateThreshold = 84 * time.Hour
 	gracePeriod     = 30 * time.Second
 )
 

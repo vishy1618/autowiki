@@ -23,7 +23,7 @@ func storeWithSession(t *testing.T) (store.SessionStore, string) {
 		Token:             "valid-token",
 		Email:             "allowed@example.com",
 		CreatedAt:         time.Now().UTC(),
-		ExpiresAt:         time.Now().UTC().Add(24 * time.Hour),
+		ExpiresAt:         time.Now().UTC().Add(7 * 24 * time.Hour),
 		AbsoluteExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
 	}
 	if err := s.CreateSession(sess); err != nil {
@@ -77,7 +77,7 @@ func TestMiddleware_API_ValidToken_PassesThrough(t *testing.T) {
 }
 
 func TestMiddleware_Rotation_WhenInSecondHalf_IssuesNewCookie(t *testing.T) {
-	// Arrange — session is 11 hours from expiry (inside the <12h threshold)
+	// Arrange — session is 11 hours from expiry (inside the <84h = 3.5-day threshold)
 	s := store.NewMemStore()
 	sess := store.Session{
 		Token:             "rot-old",
@@ -118,6 +118,12 @@ func TestMiddleware_Rotation_WhenInSecondHalf_IssuesNewCookie(t *testing.T) {
 		t.Errorf("cookie value: want %q, got %q", "new-token-1", newCookie.Value)
 	}
 
+	// Assert — cookie MaxAge reflects the session duration (7 days)
+	wantMaxAge := int((7 * 24 * time.Hour).Seconds())
+	if newCookie.MaxAge != wantMaxAge {
+		t.Errorf("cookie MaxAge: want %d (7 days), got %d", wantMaxAge, newCookie.MaxAge)
+	}
+
 	// Assert — new token is valid in the store
 	got, err := s.GetSession("new-token-1")
 	if err != nil || got == nil {
@@ -135,13 +141,13 @@ func TestMiddleware_Rotation_WhenInSecondHalf_IssuesNewCookie(t *testing.T) {
 }
 
 func TestMiddleware_Rotation_WhenInFirstHalf_DoesNotRotate(t *testing.T) {
-	// Arrange — session is 13 hours from expiry (first half, no rotation needed)
+	// Arrange — session is 85 hours from expiry (first half of a 7-day window, no rotation needed)
 	s := store.NewMemStore()
 	sess := store.Session{
 		Token:             "no-rot-token",
 		Email:             "user@example.com",
 		CreatedAt:         time.Now().UTC(),
-		ExpiresAt:         time.Now().UTC().Add(13 * time.Hour),
+		ExpiresAt:         time.Now().UTC().Add(85 * time.Hour),
 		AbsoluteExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
 	}
 	if err := s.CreateSession(sess); err != nil {

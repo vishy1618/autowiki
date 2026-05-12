@@ -19,7 +19,7 @@ const driveScope = "https://www.googleapis.com/auth/drive"
 
 const (
 	sessionCookieName   = "autowiki_session"
-	sessionDuration     = 24 * time.Hour
+	sessionDuration     = 7 * 24 * time.Hour
 	absoluteMaxLifetime = 30 * 24 * time.Hour
 	stateCookieName     = "oauth_state"
 )
