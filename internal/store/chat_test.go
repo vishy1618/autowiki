@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -407,6 +408,23 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 		}
 		if len(msgs) != 0 {
 			t.Errorf("expected 0 messages, got %d", len(msgs))
+		}
+	})
+
+	t.Run("GetRecentContext_CurrentSessionHasMoreThanMin_ReturnsAllCurrentMessages", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		sess, _ := cs.ResolveSession()
+		for i := range 35 {
+			_ = cs.AppendMessage(store.Message{SessionID: sess.ID, Role: "user", Content: fmt.Sprintf("msg%d", i)})
+		}
+
+		msgs, err := cs.GetRecentContext(sess.ID, 30)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(msgs) != 35 {
+			t.Errorf("expected all 35 current-session messages, got %d", len(msgs))
 		}
 	})
 }
