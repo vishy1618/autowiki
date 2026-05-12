@@ -72,6 +72,7 @@ make dev-server   # Go server in --dev mode (proxies non-/api to port 5173)
 
 - **`/api/*`** is reserved for Go handlers. Everything else is served as the Remix SPA (or proxied to the Remix dev server in `--dev` mode).
 - **Sessions** are a backend-only concept (30-min inactivity boundary, stored in Pebble). The UI presents one continuous infinite-scroll chat timeline — no session concept is exposed to the user.
+- **LLM context window** — the chat handler calls `ChatStore.GetRecentContext(sessionID, 30)`: always sends all messages from the current session, backfilling from older sessions (newest-first) if the total is fewer than 30. This gives the model warm cross-session context on fresh sessions while never truncating an active session. Constant is in `internal/chat/chat.go`.
 - **Vault writes are automatic** — the LLM judges whether each message warrants a write. It may write nothing at all (e.g. for greetings or pure queries).
 - **Dream state** is a goroutine that wakes between 1–5am IST nightly to reorganise the vault. It runs at most once per night and logs changes to `log.md`.
 - **The Obsidian vault lives outside the repo** at `VAULT_PATH`. `internal/vault` is Go code, not vault data.

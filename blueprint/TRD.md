@@ -204,8 +204,17 @@ internal/drivesync/
 Session boundary is determined by inactivity:
 
 - On each incoming message, read `last_active_at` of the current session from Pebble.
-- If `last_active_at` is more than **24 hours** ago (or no session exists), create a new session.
+- If `last_active_at` is more than **30 minutes** ago (or no session exists), create a new session.
 - Otherwise, append the message to the current session and update `last_active_at`.
+
+### LLM context window
+
+On each chat request the handler builds the message list sent to the LLM via `ChatStore.GetRecentContext`:
+
+1. Always include **all messages from the current session** (never truncated).
+2. If the current session has fewer than **30 messages**, prepend the most recent messages from older sessions (newest-to-oldest) until the total reaches 30, or all history is exhausted.
+
+This gives the LLM warm context from prior conversations on new sessions while never cutting off an active session mid-reasoning. The 30-message threshold is a constant in `internal/chat/chat.go`.
 
 ---
 
