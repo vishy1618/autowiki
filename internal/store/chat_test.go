@@ -411,6 +411,23 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 		}
 	})
 
+	t.Run("GetRecentContext_MinZeroAndEmptySession_ReturnsEmptySlice", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		sess, _ := cs.ResolveSession()
+
+		msgs, err := cs.GetRecentContext(sess.ID, 0)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if msgs == nil {
+			t.Error("expected non-nil empty slice, got nil")
+		}
+		if len(msgs) != 0 {
+			t.Errorf("expected 0 messages, got %d", len(msgs))
+		}
+	})
+
 	t.Run("GetRecentContext_CurrentSessionHasMoreThanMin_ReturnsAllCurrentMessages", func(t *testing.T) {
 		cs := store.NewMemChatStore()
 		sess, _ := cs.ResolveSession()
