@@ -148,3 +148,52 @@ func (m *MemChatStore) ListMessages(sessionID string) ([]Message, error) {
 	}
 	return out, nil
 }
+
+func (m *MemChatStore) GetRecentContext(currentSessionID string, minMessages int) ([]Message, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var current []Message
+	for _, msg := range m.messages {
+		if msg.SessionID == currentSessionID {
+			current = append(current, msg)
+		}
+	}
+
+	if len(current) >= minMessages {
+		if current == nil {
+			current = []Message{}
+		}
+		return current, nil
+	}
+
+	need := minMessages - len(current)
+	// Walk sessions newest-first, skipping the current one.
+	var prior []Message
+	for i := len(m.sessions) - 1; i >= 0 && need > 0; i-- {
+		s := m.sessions[i]
+		if s.ID == currentSessionID {
+			continue
+		}
+		var sessmsgs []Message
+		for _, msg := range m.messages {
+			if msg.SessionID == s.ID {
+				sessmsgs = append(sessmsgs, msg)
+			}
+		}
+		prior = append(sessmsgs, prior...)
+		need -= len(sessmsgs)
+	}
+
+	// Trim prior to at most (minMessages - len(current)) messages, taking the newest.
+	cap := minMessages - len(current)
+	if len(prior) > cap {
+		prior = prior[len(prior)-cap:]
+	}
+
+	result := append(prior, current...)
+	if result == nil {
+		result = []Message{}
+	}
+	return result, nil
+}

@@ -49,6 +49,13 @@ type ChatStore interface {
 	// (newest-first), does a case-insensitive substring match on message content,
 	// skips tool_result messages, and returns snippets (≤300 chars) with session date.
 	SearchMessages(query string, sessionOffset, sessionLimit int) ([]MessageSearchResult, error)
+
+	// GetRecentContext returns messages to use as LLM context. It always includes
+	// all messages from currentSessionID. If that total is fewer than minMessages,
+	// it prepends messages from older sessions (newest-to-oldest) until minMessages
+	// is reached or history is exhausted. Messages are returned chronologically
+	// (oldest first). minMessages=0 returns only the current session's messages.
+	GetRecentContext(currentSessionID string, minMessages int) ([]Message, error)
 }
 
 // DriveTokenStore persists the Google OAuth refresh token used for Drive sync.

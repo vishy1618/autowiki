@@ -395,4 +395,18 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 			t.Errorf("snippet: want %q, got %q", "beta content", results[0].Snippet)
 		}
 	})
+
+	t.Run("GetRecentContext_WhenNoHistory_ReturnsEmpty", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+		sess, _ := cs.ResolveSession()
+
+		msgs, err := cs.GetRecentContext(sess.ID, 30)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(msgs) != 0 {
+			t.Errorf("expected 0 messages, got %d", len(msgs))
+		}
+	})
 }

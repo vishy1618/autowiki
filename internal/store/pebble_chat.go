@@ -247,3 +247,45 @@ func (p *PebbleChatStore) ListMessages(sessionID string) ([]Message, error) {
 	return msgs, nil
 }
 
+func (p *PebbleChatStore) GetRecentContext(currentSessionID string, minMessages int) ([]Message, error) {
+	current, err := p.ListMessages(currentSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(current) >= minMessages {
+		return current, nil
+	}
+
+	ids, err := p.loadSessionList()
+	if err != nil {
+		return nil, err
+	}
+
+	need := minMessages - len(current)
+	var prior []Message
+	// ids is newest-first; skip the current session and walk older sessions.
+	for _, id := range ids {
+		if id == currentSessionID || need <= 0 {
+			continue
+		}
+		sessmsgs, err := p.ListMessages(id)
+		if err != nil {
+			return nil, err
+		}
+		prior = append(sessmsgs, prior...)
+		need -= len(sessmsgs)
+	}
+
+	cap := minMessages - len(current)
+	if len(prior) > cap {
+		prior = prior[len(prior)-cap:]
+	}
+
+	result := append(prior, current...)
+	if result == nil {
+		result = []Message{}
+	}
+	return result, nil
+}
+

@@ -1262,6 +1262,10 @@ func (s *stubChatStore) SearchMessages(q string, so, sl int) ([]store.MessageSea
 	return s.inner.SearchMessages(q, so, sl)
 }
 
+func (s *stubChatStore) GetRecentContext(sessionID string, min int) ([]store.Message, error) {
+	return s.inner.GetRecentContext(sessionID, min)
+}
+
 // ── error path tests ──────────────────────────────────────────────────────────
 
 func TestHandler_PostChat_AttachmentWithNoDescription_InjectsPlainContext(t *testing.T) {
