@@ -77,7 +77,7 @@ func (r *AgenticRunner) Run(ctx context.Context, sessionID, systemPrompt string,
 			return fmt.Errorf("exceeded maximum tool call limit")
 		}
 
-		history, err := r.store.ListMessages(sessionID)
+		history, err := r.store.GetRecentContext(sessionID, 30)
 		if err != nil {
 			writeSSE(w, "error", `{"message":"store error"}`)
 			flush()

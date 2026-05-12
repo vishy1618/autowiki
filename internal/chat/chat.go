@@ -169,7 +169,9 @@ func (h *Handler) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build conversation history and read vault index.
-	history, err := h.store.ListMessages(session.ID)
+	// Always include the full current session; backfill from prior sessions
+	// until we have at least 30 messages of context.
+	history, err := h.store.GetRecentContext(session.ID, 30)
 	if err != nil {
 		http.Error(w, "store error", http.StatusInternalServerError)
 		return

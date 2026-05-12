@@ -183,6 +183,45 @@ func TestHandler_PostChat_PersistsUserAndAssistantMessages(t *testing.T) {
 	}
 }
 
+func TestHandler_PostChat_IncludesPriorSessionMessagesInLLMContext(t *testing.T) {
+	// Arrange — seed an old session with a message, then age it out.
+	cs := store.NewMemChatStore()
+	vm := vault.NewManager(t.TempDir())
+
+	oldSess, _ := cs.ResolveSession()
+	_ = cs.AppendMessage(store.Message{SessionID: oldSess.ID, Role: "user", Content: "prior session content"})
+	stale := oldSess
+	stale.LastActiveAt = time.Now().Add(-31 * time.Minute)
+	_ = cs.UpdateSession(stale)
+
+	streamer := &stubStreamer{body: minimalAnthropicSSE}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	// New request creates a fresh session.
+	form := url.Values{"message": {"new message"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — streamer must have received the prior-session message as context.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var found bool
+	for _, msg := range streamer.capturedMsgs {
+		if msg.Content == "prior session content" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected prior-session message in LLM context, got messages: %v", streamer.capturedMsgs)
+	}
+}
+
 func TestHandler_PostChat_WritesVaultAndEmitsVaultEvent(t *testing.T) {
 	// Arrange
 	cs := store.NewMemChatStore()
@@ -1263,6 +1302,10 @@ func (s *stubChatStore) SearchMessages(q string, so, sl int) ([]store.MessageSea
 }
 
 func (s *stubChatStore) GetRecentContext(sessionID string, min int) ([]store.Message, error) {
+	s.listCallN++
+	if s.failList || (s.failListAfterN > 0 && s.listCallN > s.failListAfterN) {
+		return nil, errors.New("list error")
+	}
 	return s.inner.GetRecentContext(sessionID, min)
 }
 
