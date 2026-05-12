@@ -428,6 +428,35 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 		}
 	})
 
+	t.Run("GetRecentContext_WhenPriorHistoryTooShort_ReturnsAllAvailable", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+
+		// Older session with only 5 messages.
+		older, _ := cs.ResolveSession()
+		for i := range 5 {
+			_ = cs.AppendMessage(store.Message{SessionID: older.ID, Role: "user", Content: fmt.Sprintf("old%d", i)})
+		}
+		stale := older
+		stale.LastActiveAt = time.Now().Add(-31 * time.Minute)
+		_ = cs.UpdateSession(stale)
+
+		// Current session with 10 messages.
+		current, _ := cs.ResolveSession()
+		for i := range 10 {
+			_ = cs.AppendMessage(store.Message{SessionID: current.ID, Role: "user", Content: fmt.Sprintf("new%d", i)})
+		}
+
+		// min=30 but only 15 total exist — should return all 15.
+		msgs, err := cs.GetRecentContext(current.ID, 30)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(msgs) != 15 {
+			t.Errorf("expected 15 messages (all available), got %d", len(msgs))
+		}
+	})
+
 	t.Run("GetRecentContext_BackfillsFromPriorSessionAndReturnsChronologically", func(t *testing.T) {
 		cs := store.NewMemChatStore()
 
