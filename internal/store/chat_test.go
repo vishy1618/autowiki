@@ -457,6 +457,33 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 		}
 	})
 
+	t.Run("GetRecentContext_MinZero_ReturnsOnlyCurrentSession", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+
+		// Older session.
+		older, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: older.ID, Role: "user", Content: "old"})
+		stale := older
+		stale.LastActiveAt = time.Now().Add(-31 * time.Minute)
+		_ = cs.UpdateSession(stale)
+
+		// Current session.
+		current, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: current.ID, Role: "user", Content: "new"})
+
+		msgs, err := cs.GetRecentContext(current.ID, 0)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Errorf("expected 1 message (current only), got %d", len(msgs))
+		}
+		if msgs[0].Content != "new" {
+			t.Errorf("expected current-session message, got %q", msgs[0].Content)
+		}
+	})
+
 	t.Run("GetRecentContext_BackfillsAcrossMultiplePriorSessions", func(t *testing.T) {
 		cs := store.NewMemChatStore()
 
