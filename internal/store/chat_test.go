@@ -571,4 +571,38 @@ func runChatStoreTests(t *testing.T, cs store.ChatStore) {
 			t.Errorf("expected last message to be from current session, got session %q", msgs[len(msgs)-1].SessionID)
 		}
 	})
+
+	t.Run("GetRecentContext_TrimmingAtToolExchange_StartsAtUserMessage", func(t *testing.T) {
+		cs := store.NewMemChatStore()
+
+		// Prior session: user → assistant(tool_use JSON) → tool_result → assistant(text).
+		// This is the normal agentic-loop storage pattern.
+		prior, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: prior.ID, Role: "user", Content: "look up attachments"})
+		_ = cs.AppendMessage(store.Message{SessionID: prior.ID, Role: "assistant", Content: `[{"type":"text","text":"Searching..."},{"type":"tool_use","id":"toolu_abc","name":"search_vault","input":{}}]`})
+		_ = cs.AppendMessage(store.Message{SessionID: prior.ID, Role: "tool_result", Content: `{"tool_use_id":"toolu_abc","content":"found: attachments/"}`})
+		_ = cs.AppendMessage(store.Message{SessionID: prior.ID, Role: "assistant", Content: "I found your attachments."})
+		stalePrior := prior
+		stalePrior.LastActiveAt = time.Now().Add(-31 * time.Minute)
+		_ = cs.UpdateSession(stalePrior)
+
+		// Current session with 2 messages.
+		current, _ := cs.ResolveSession()
+		_ = cs.AppendMessage(store.Message{SessionID: current.ID, Role: "user", Content: "what did we discuss?"})
+		_ = cs.AppendMessage(store.Message{SessionID: current.ID, Role: "assistant", Content: "We discussed attachments."})
+
+		// minMessages=5 forces backfill; cap=3, trim lands at prior[1:] which starts
+		// with the assistant(tool_use) message — an invalid Anthropic API start.
+		msgs, err := cs.GetRecentContext(current.ID, 5)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(msgs) == 0 {
+			t.Fatal("expected non-empty result")
+		}
+		if msgs[0].Role != "user" {
+			t.Errorf("first message must be role %q, got %q (content: %q)", "user", msgs[0].Role, msgs[0].Content)
+		}
+	})
 }

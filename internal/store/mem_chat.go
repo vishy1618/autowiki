@@ -190,6 +190,13 @@ func (m *MemChatStore) GetRecentContext(currentSessionID string, minMessages int
 	if len(prior) > cap {
 		prior = prior[len(prior)-cap:]
 	}
+	// Skip orphaned leading messages: trimming may land in the middle of a
+	// tool-call exchange, leaving a tool_result or assistant(tool_use) with no
+	// preceding pair. The Anthropic API requires the first message to be a plain
+	// user message with no orphaned tool_result blocks.
+	for len(prior) > 0 && prior[0].Role != "user" {
+		prior = prior[1:]
+	}
 
 	result := append(prior, current...)
 	if result == nil {
