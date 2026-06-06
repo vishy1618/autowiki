@@ -63,6 +63,8 @@ var toolDefinitions = []any{
 	searchVaultToolDefinition,
 	listVaultToolDefinition,
 	readPagePartialToolDefinition,
+	patchPageToolDefinition,
+	appendToSectionToolDefinition,
 	movePageToolDefinition,
 	deleteItemToolDefinition,
 	saveAttachmentNotesToolDefinition,
@@ -161,6 +163,36 @@ var readPagePartialToolDefinition = map[string]any{
 			"max_chars": map[string]any{"type": "integer", "description": "Maximum number of bytes to read."},
 		},
 		"required": []string{"path", "max_chars"},
+	},
+}
+
+// patchPageToolDefinition allows the LLM to replace a unique substring in a vault page.
+var patchPageToolDefinition = map[string]any{
+	"name":        "patch_page",
+	"description": "Replace a unique occurrence of old_str with new_str in an existing vault page. Use read_page_partial first to identify the exact anchor string. Returns an error if old_str is not found or appears more than once — widen the anchor to make it unique.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":    map[string]any{"type": "string", "description": "Vault-relative path to the file."},
+			"old_str": map[string]any{"type": "string", "description": "Exact text to find (must be unique in the file)."},
+			"new_str": map[string]any{"type": "string", "description": "Replacement text."},
+		},
+		"required": []string{"path", "old_str", "new_str"},
+	},
+}
+
+// appendToSectionToolDefinition allows the LLM to append content under a heading.
+var appendToSectionToolDefinition = map[string]any{
+	"name":        "append_to_section",
+	"description": "Append content immediately before the next heading of equal or higher level inside an existing vault page. If the heading does not exist it is created at the end of the file. No prior read needed for simple additions.",
+	"input_schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":    map[string]any{"type": "string", "description": "Vault-relative path to the file."},
+			"heading": map[string]any{"type": "string", "description": "Exact heading line to append under, e.g. '## Daily Notes'."},
+			"content": map[string]any{"type": "string", "description": "Markdown content to insert."},
+		},
+		"required": []string{"path", "heading", "content"},
 	},
 }
 

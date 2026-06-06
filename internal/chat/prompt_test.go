@@ -12,6 +12,20 @@ func TestBuildSystemPrompt_MentionsWritePages(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPrompt_MentionsPatchPage(t *testing.T) {
+	got := buildSystemPrompt("", "")
+	if !strings.Contains(got, "patch_page") {
+		t.Errorf("system prompt missing %q", "patch_page")
+	}
+}
+
+func TestBuildSystemPrompt_MentionsAppendToSection(t *testing.T) {
+	got := buildSystemPrompt("", "")
+	if !strings.Contains(got, "append_to_section") {
+		t.Errorf("system prompt missing %q", "append_to_section")
+	}
+}
+
 func TestBuildSystemPrompt_DownloadLinkInstructions(t *testing.T) {
 	tests := []struct {
 		name    string
