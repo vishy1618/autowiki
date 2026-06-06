@@ -93,6 +93,7 @@ var webFetchToolDefinition = map[string]any{
 // toolDefinitions) so Anthropic caches the entire tool list on every request.
 var codeExecutionToolDefinition = map[string]any{
 	"type":          "code_execution_20260120",
+	"name":          "code_execution",
 	"cache_control": map[string]any{"type": "ephemeral"},
 }
 

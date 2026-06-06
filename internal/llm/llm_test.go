@@ -966,6 +966,7 @@ func TestClient_Stream_IncludesCodeExecutionTool(t *testing.T) {
 		var body struct {
 			Tools []struct {
 				Type string `json:"type"`
+				Name string `json:"name"`
 			} `json:"tools"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -975,6 +976,9 @@ func TestClient_Stream_IncludesCodeExecutionTool(t *testing.T) {
 		for _, tool := range body.Tools {
 			if tool.Type == "code_execution_20260120" {
 				found = true
+				if tool.Name == "" {
+					t.Error("code_execution tool must have a non-empty name field")
+				}
 				break
 			}
 		}
