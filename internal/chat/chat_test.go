@@ -50,7 +50,7 @@ data: {"type":"message_stop"}
 `
 
 // toolUseAnthropicSSE is a streaming response where the model emits a text
-// reply AND calls the save_to_vault tool.
+// reply AND calls the write_pages tool.
 const toolUseAnthropicSSE = `event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
 
@@ -61,7 +61,7 @@ event: content_block_stop
 data: {"type":"content_block_stop","index":0}
 
 event: content_block_start
-data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool_abc","name":"save_to_vault","input":{}}}
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool_abc","name":"write_pages","input":{}}}
 
 event: content_block_delta
 data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"pages\":[{\"path\":\"notes/test.md\",\"content\":\"# Test\"}]}"}}

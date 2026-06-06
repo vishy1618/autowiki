@@ -66,7 +66,7 @@ var toolDefinitions = []any{
 	movePageToolDefinition,
 	deleteItemToolDefinition,
 	saveAttachmentNotesToolDefinition,
-	saveToVaultToolDefinition,
+	writePagesTool,
 	searchChatHistoryToolDefinition,
 	webSearchToolDefinition,
 	webFetchToolDefinition,
@@ -208,10 +208,10 @@ var saveAttachmentNotesToolDefinition = map[string]any{
 	},
 }
 
-// saveToVaultToolDefinition is the save_to_vault tool schema sent in every request.
-var saveToVaultToolDefinition = map[string]any{
-	"name":        "save_to_vault",
-	"description": "Save knowledge to the user's personal vault. Call this when the conversation contains information worth preserving. Each page should be a focused topic; use nested paths (e.g. 'programming/go.md') to organise by subject.",
+// writePagesTool is the write_pages tool schema sent in every request.
+var writePagesTool = map[string]any{
+	"name":        "write_pages",
+	"description": "Create or fully replace one or more vault pages. Use for new pages or when rewriting a page entirely. For targeted edits to existing pages use patch_page or append_to_section instead. Each page should be a focused topic; use nested paths (e.g. 'programming/go.md') to organise by subject.",
 	"input_schema": map[string]any{
 		"type": "object",
 		"properties": map[string]any{

@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func TestBuildSystemPrompt_MentionsWritePages(t *testing.T) {
+	got := buildSystemPrompt("", "")
+	if !strings.Contains(got, "write_pages") {
+		t.Errorf("system prompt missing %q", "write_pages")
+	}
+}
+
 func TestBuildSystemPrompt_DownloadLinkInstructions(t *testing.T) {
 	tests := []struct {
 		name    string

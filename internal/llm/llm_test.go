@@ -245,7 +245,7 @@ func TestClient_Stream_ReturnsErrorOnNon200(t *testing.T) {
 	}
 }
 
-func TestClient_Stream_IncludesSaveToVaultTool(t *testing.T) {
+func TestClient_Stream_IncludesWritePagesTool(t *testing.T) {
 	// Arrange
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -262,13 +262,13 @@ func TestClient_Stream_IncludesSaveToVaultTool(t *testing.T) {
 
 		found := false
 		for _, tool := range body.Tools {
-			if tool.Name == "save_to_vault" {
+			if tool.Name == "write_pages" {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Error("expected save_to_vault tool in request")
+			t.Error("expected write_pages tool in request")
 		}
 		if body.ToolChoice.Type != "auto" {
 			t.Errorf("expected tool_choice auto, got %q", body.ToolChoice.Type)
@@ -310,7 +310,7 @@ func TestClient_Stream_SendsAssistantContentBlocksWhenContentIsJSONArray(t *test
 	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
 	messages := []store.Message{
 		{Role: "user", Content: "I learned Go has interfaces"},
-		{Role: "assistant", Content: `[{"type":"text","text":"Saving!"},{"type":"tool_use","id":"toolu_abc","name":"save_to_vault","input":{}}]`},
+		{Role: "assistant", Content: `[{"type":"text","text":"Saving!"},{"type":"tool_use","id":"toolu_abc","name":"write_pages","input":{}}]`},
 		{Role: "tool_result", Content: `{"tool_use_id":"toolu_abc","content":"saved: notes/go.md","is_error":false}`},
 		{Role: "user", Content: "What did I tell you about Go?"},
 	}

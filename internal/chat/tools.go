@@ -11,7 +11,7 @@ import (
 	"github.com/suvish/autowiki/internal/store"
 )
 
-// vaultWriteInput is the parsed tool input for save_to_vault.
+// vaultWriteInput is the parsed tool input for write_pages.
 type vaultWriteInput struct {
 	Pages []struct {
 		Path    string `json:"path"`
@@ -71,7 +71,7 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 	}
 	for _, tc := range toolCalls {
 		switch tc.name {
-		case "save_to_vault":
+		case "write_pages":
 			r.applyVaultWrites(w, sessionID, tc.id, tc.json, canFlush, flusher)
 
 		case "read_page":
