@@ -176,6 +176,50 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 				flush()
 			}
 
+		case "patch_page":
+			var input struct {
+				Path   string `json:"path"`
+				OldStr string `json:"old_str"`
+				NewStr string `json:"new_str"`
+			}
+			if err := json.Unmarshal([]byte(tc.json), &input); err != nil {
+				r.storeToolResult(sessionID, tc.id, "invalid tool input: "+err.Error(), true)
+				continue
+			}
+			writeSSE(w, "status", fmt.Sprintf(`{"message":"Patching %s…"}`, input.Path))
+			flush()
+			if err := r.vault.PatchFile(input.Path, input.OldStr, input.NewStr); err != nil {
+				r.storeToolResult(sessionID, tc.id, err.Error(), true)
+			} else {
+				_ = r.vault.AppendLog(fmt.Sprintf("patched %s", input.Path))
+				r.storeToolResult(sessionID, tc.id, fmt.Sprintf("patched %s", input.Path), false)
+				payload, _ := json.Marshal(map[string]any{"action": "patched", "path": input.Path})
+				writeSSE(w, "vault", string(payload))
+				flush()
+			}
+
+		case "append_to_section":
+			var input struct {
+				Path    string `json:"path"`
+				Heading string `json:"heading"`
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal([]byte(tc.json), &input); err != nil {
+				r.storeToolResult(sessionID, tc.id, "invalid tool input: "+err.Error(), true)
+				continue
+			}
+			writeSSE(w, "status", fmt.Sprintf(`{"message":"Updating %s…"}`, input.Path))
+			flush()
+			if err := r.vault.AppendToSection(input.Path, input.Heading, input.Content); err != nil {
+				r.storeToolResult(sessionID, tc.id, err.Error(), true)
+			} else {
+				_ = r.vault.AppendLog(fmt.Sprintf("appended to %s section in %s", input.Heading, input.Path))
+				r.storeToolResult(sessionID, tc.id, fmt.Sprintf("appended to %s in %s", input.Heading, input.Path), false)
+				payload, _ := json.Marshal(map[string]any{"action": "appended", "path": input.Path, "heading": input.Heading})
+				writeSSE(w, "vault", string(payload))
+				flush()
+			}
+
 		case "search_chat_history":
 			var input struct {
 				Query  string `json:"query"`

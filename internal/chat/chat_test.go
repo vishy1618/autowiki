@@ -1575,6 +1575,144 @@ type sseEvent struct {
 	data  string
 }
 
+const patchPageToolUseSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_pp1","name":"patch_page","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"notes.md\",\"old_str\":\"old line\",\"new_str\":\"new line\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func TestHandler_PostChat_DispatchesPatchPageAndEmitsVaultEvent(t *testing.T) {
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("notes.md", "# Notes\n\nold line\n\nmore content\n")
+
+	cs := store.NewMemChatStore()
+	streamer := &multiResponseStreamer{bodies: []string{patchPageToolUseSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"update my notes"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	content, _ := vm.ReadFile("notes.md")
+	if !strings.Contains(content, "new line") {
+		t.Errorf("expected patch applied, got: %q", content)
+	}
+	events := parseSSE(t, w.Body.String())
+	hasVault := false
+	for _, ev := range events {
+		if ev.event == "vault" {
+			hasVault = true
+			break
+		}
+	}
+	if !hasVault {
+		t.Errorf("expected vault SSE event for patch_page, got events: %v", events)
+	}
+}
+
+func TestHandler_PostChat_PatchPageStoresErrorOnFailure(t *testing.T) {
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("notes.md", "# Notes\n\nsome content\n")
+
+	cs := store.NewMemChatStore()
+	// old_str won't be found → error result expected
+	streamer := &multiResponseStreamer{bodies: []string{patchPageToolUseSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	// Use a file that does NOT contain "old line" so the patch fails.
+	_ = vm.WriteFile("notes.md", "# Notes\n\ndifferent content\n")
+
+	form := url.Values{"message": {"update my notes"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	// Should still return 200 (error is in tool_result, not HTTP status).
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	// The tool result in the store should be an error.
+	msgs, _ := cs.GetRecentContext("", 30)
+	var hasErrorResult bool
+	for _, msg := range msgs {
+		if msg.Role == "tool_result" && strings.Contains(msg.Content, "is_error\":true") {
+			hasErrorResult = true
+			break
+		}
+	}
+	if !hasErrorResult {
+		t.Error("expected an error tool_result stored for failed patch_page")
+	}
+}
+
+const appendToSectionToolUseSSE = `event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_ats1","name":"append_to_section","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"notes.md\",\"heading\":\"## Log\",\"content\":\"- new entry\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+func TestHandler_PostChat_DispatchesAppendToSectionAndEmitsVaultEvent(t *testing.T) {
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	_ = vm.WriteFile("notes.md", "# Notes\n\n## Log\n\nexisting entry\n")
+
+	cs := store.NewMemChatStore()
+	streamer := &multiResponseStreamer{bodies: []string{appendToSectionToolUseSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"add to my log"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	content, _ := vm.ReadFile("notes.md")
+	if !strings.Contains(content, "new entry") {
+		t.Errorf("expected appended content in file, got: %q", content)
+	}
+	events := parseSSE(t, w.Body.String())
+	hasVault := false
+	for _, ev := range events {
+		if ev.event == "vault" {
+			hasVault = true
+			break
+		}
+	}
+	if !hasVault {
+		t.Errorf("expected vault SSE event for append_to_section, got events: %v", events)
+	}
+}
+
 func parseSSE(t *testing.T, body string) []sseEvent {
 	t.Helper()
 	var events []sseEvent
