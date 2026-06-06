@@ -26,9 +26,9 @@ func NewAgenticRunner(streamer Streamer, cs store.ChatStore, vm *vault.Manager) 
 
 // Run drives the agentic loop starting from firstBody (the already-opened first
 // LLM stream). It emits SSE events to w, persists messages to the store, and
-// returns when the LLM produces a final answer, save_to_vault terminates the
-// loop, or an error occurs. maxToolCalls caps the total number of tool
-// dispatches. If w implements http.Flusher, Run flushes after each event.
+// returns when the LLM produces a final answer or an error occurs. maxToolCalls
+// caps the total number of tool dispatches. If w implements http.Flusher, Run
+// flushes after each event.
 func (r *AgenticRunner) Run(ctx context.Context, sessionID, systemPrompt string, firstBody io.ReadCloser, w io.Writer, maxToolCalls int) error {
 	flusher, canFlush := w.(http.Flusher)
 	flush := func() {
@@ -38,7 +38,7 @@ func (r *AgenticRunner) Run(ctx context.Context, sessionID, systemPrompt string,
 	}
 
 	body := firstBody
-	for retrievalCount := 0; ; {
+	for toolCallCount := 0; ; {
 		sr := scanStream(body, w, canFlush, flusher)
 		body.Close()
 
@@ -64,14 +64,10 @@ func (r *AgenticRunner) Run(ctx context.Context, sessionID, systemPrompt string,
 			return nil
 		}
 
-		if r.dispatchToolCalls(w, sessionID, sr.toolCalls, canFlush, flusher) {
-			writeSSE(w, "done", fmt.Sprintf(`{"session_id":%q}`, sessionID))
-			flush()
-			return nil
-		}
+		r.dispatchToolCalls(w, sessionID, sr.toolCalls, canFlush, flusher)
 
-		retrievalCount += len(sr.toolCalls)
-		if retrievalCount > maxToolCalls {
+		toolCallCount += len(sr.toolCalls)
+		if toolCallCount > maxToolCalls {
 			writeSSE(w, "error", `{"message":"exceeded maximum tool call limit"}`)
 			flush()
 			return fmt.Errorf("exceeded maximum tool call limit")

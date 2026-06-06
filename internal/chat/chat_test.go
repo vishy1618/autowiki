@@ -223,11 +223,11 @@ func TestHandler_PostChat_IncludesPriorSessionMessagesInLLMContext(t *testing.T)
 }
 
 func TestHandler_PostChat_WritesVaultAndEmitsVaultEvent(t *testing.T) {
-	// Arrange
+	// Arrange — first call writes vault; second call is the follow-up text response.
 	cs := store.NewMemChatStore()
 	vaultDir := t.TempDir()
 	vm := vault.NewManager(vaultDir)
-	h := chat.NewHandler(cs, &stubStreamer{body: toolUseAnthropicSSE}, vm)
+	h := chat.NewHandler(cs, &multiResponseStreamer{bodies: []string{toolUseAnthropicSSE, minimalAnthropicSSE}}, vm)
 
 	form := url.Values{"message": {"I learned about Go interfaces"}}
 	req := httptest.NewRequest(http.MethodPost, "/api/chat",
@@ -258,6 +258,47 @@ func TestHandler_PostChat_WritesVaultAndEmitsVaultEvent(t *testing.T) {
 	}
 	if !hasVault {
 		t.Errorf("expected vault SSE event with path, got events: %v", events)
+	}
+}
+
+func TestHandler_PostChat_SaveToVault_ContinuesLoopForFollowUpResponse(t *testing.T) {
+	// Arrange — first LLM call writes to vault; second produces a final text reply.
+	cs := store.NewMemChatStore()
+	vm := vault.NewManager(t.TempDir())
+	streamer := &multiResponseStreamer{bodies: []string{toolUseAnthropicSSE, minimalAnthropicSSE}}
+	h := chat.NewHandler(cs, streamer, vm)
+
+	form := url.Values{"message": {"I learned about Go interfaces"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	// Act
+	h.ServeHTTP(w, req)
+
+	// Assert — the runner must have called Stream a second time after the vault
+	// write, so the follow-up "hi" text from minimalAnthropicSSE appears.
+	events := parseSSE(t, w.Body.String())
+	hasContinuationDelta := false
+	for _, ev := range events {
+		if ev.event == "delta" && strings.Contains(ev.data, "hi") {
+			hasContinuationDelta = true
+			break
+		}
+	}
+	if !hasContinuationDelta {
+		t.Error("want a delta event with follow-up text after save_to_vault; loop must continue instead of terminating early")
+	}
+	hasDone := false
+	for _, ev := range events {
+		if ev.event == "done" {
+			hasDone = true
+			break
+		}
+	}
+	if !hasDone {
+		t.Error("want a done event after save_to_vault loop continuation")
 	}
 }
 

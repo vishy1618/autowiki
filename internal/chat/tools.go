@@ -62,18 +62,16 @@ func (r *AgenticRunner) applyVaultWrites(w io.Writer, sessionID, toolUseID, tool
 }
 
 // dispatchToolCalls executes each tool call, emits SSE status/vault events, and
-// stores tool_result messages. Returns true when save_to_vault was called.
-func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCalls []toolCall, canFlush bool, flusher http.Flusher) bool {
+// stores tool_result messages.
+func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCalls []toolCall, canFlush bool, flusher http.Flusher) {
 	flush := func() {
 		if canFlush {
 			flusher.Flush()
 		}
 	}
-	hasSaveToVault := false
 	for _, tc := range toolCalls {
 		switch tc.name {
 		case "save_to_vault":
-			hasSaveToVault = true
 			r.applyVaultWrites(w, sessionID, tc.id, tc.json, canFlush, flusher)
 
 		case "read_page":
@@ -194,7 +192,6 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 			r.storeToolResult(sessionID, tc.id, "unknown tool: "+tc.name, true)
 		}
 	}
-	return hasSaveToVault
 }
 
 // storeToolResult persists a tool_result message for the given tool_use_id.
