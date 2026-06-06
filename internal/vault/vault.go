@@ -444,6 +444,86 @@ func (m *Manager) PatchFile(path, oldStr, newStr string) error {
 	return os.WriteFile(full, []byte(patched), 0o644)
 }
 
+// AppendToSection inserts content immediately before the next heading of the
+// same or higher level following heading in the file. If heading is not found,
+// the heading and content are appended at the end of the file.
+func (m *Manager) AppendToSection(path, heading, content string) error {
+	full, err := m.safePath(path)
+	if err != nil {
+		return err
+	}
+
+	var existing string
+	if data, readErr := os.ReadFile(full); readErr == nil {
+		existing = string(data)
+	}
+
+	// Determine the level of the target heading (count leading '#').
+	targetLevel := 0
+	for _, ch := range heading {
+		if ch == '#' {
+			targetLevel++
+		} else {
+			break
+		}
+	}
+
+	idx := strings.Index(existing, heading)
+	if idx == -1 {
+		// Heading not present — append heading + content at end.
+		sep := "\n"
+		if strings.HasSuffix(existing, "\n\n") {
+			sep = ""
+		} else if strings.HasSuffix(existing, "\n") {
+			sep = "\n"
+		}
+		patched := existing + sep + heading + "\n\n" + content + "\n"
+		return os.WriteFile(full, []byte(patched), 0o644)
+	}
+
+	// Find the end of the heading line.
+	afterHeading := idx + len(heading)
+	if afterHeading < len(existing) && existing[afterHeading] == '\n' {
+		afterHeading++
+	}
+
+	// Scan lines after the heading to find where the section ends — the next
+	// heading at the same or higher level (fewer or equal '#').
+	rest := existing[afterHeading:]
+	lines := strings.Split(rest, "\n")
+	insertAt := len(rest) // default: end of file
+	for i, line := range lines {
+		if i == 0 {
+			continue // skip the blank line right after the heading
+		}
+		if strings.HasPrefix(line, "#") {
+			// Count level of this heading.
+			level := 0
+			for _, ch := range line {
+				if ch == '#' {
+					level++
+				} else {
+					break
+				}
+			}
+			if level <= targetLevel {
+				// Rebuild offset: sum of lines[0..i-1] lengths + separators.
+				insertAt = len(strings.Join(lines[:i], "\n")) + 1 // +1 for the joining \n
+				break
+			}
+		}
+	}
+
+	before := existing[:afterHeading] + rest[:insertAt]
+	after := rest[insertAt:]
+	// Ensure a blank line before the inserted content.
+	if !strings.HasSuffix(before, "\n\n") {
+		before += "\n"
+	}
+	patched := before + content + "\n" + after
+	return os.WriteFile(full, []byte(patched), 0o644)
+}
+
 // contentDisposition returns a Content-Disposition header value for the given
 // filename. Plain ASCII filenames (letters, digits, '.', '-', '_') use the
 // quoted-string form; all others use RFC 5987 UTF-8 percent-encoding.

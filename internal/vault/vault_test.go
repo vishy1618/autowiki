@@ -67,6 +67,68 @@ func TestManager_PatchFile_RejectsPathTraversal(t *testing.T) {
 	}
 }
 
+// AppendToSection
+
+func TestManager_AppendToSection_InsertsBeforeNextSameLevelHeading(t *testing.T) {
+	m := newManager(t)
+	initial := "# Title\n\n## Alpha\n\nexisting line\n\n## Beta\n\nbeta content\n"
+	if err := m.WriteFile("notes.md", initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AppendToSection("notes.md", "## Alpha", "- new bullet"); err != nil {
+		t.Fatalf("AppendToSection returned unexpected error: %v", err)
+	}
+	got, _ := m.ReadFile("notes.md")
+	// new content must appear before ## Beta
+	alphaIdx := strings.Index(got, "- new bullet")
+	betaIdx := strings.Index(got, "## Beta")
+	if alphaIdx == -1 {
+		t.Fatal("appended content not found in file")
+	}
+	if alphaIdx > betaIdx {
+		t.Errorf("appended content appears after ## Beta; want it inside ## Alpha section")
+	}
+}
+
+func TestManager_AppendToSection_CreatesHeadingAtEndWhenNotFound(t *testing.T) {
+	m := newManager(t)
+	if err := m.WriteFile("notes.md", "# Title\n\nsome content\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AppendToSection("notes.md", "## New Section", "- item"); err != nil {
+		t.Fatalf("AppendToSection returned unexpected error: %v", err)
+	}
+	got, _ := m.ReadFile("notes.md")
+	if !strings.Contains(got, "## New Section") {
+		t.Error("expected ## New Section to be created at end of file")
+	}
+	if !strings.Contains(got, "- item") {
+		t.Error("expected appended content to appear under new section")
+	}
+}
+
+func TestManager_AppendToSection_HandlesHeadingAtEndOfFile(t *testing.T) {
+	m := newManager(t)
+	if err := m.WriteFile("notes.md", "# Title\n\n## Last\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AppendToSection("notes.md", "## Last", "- appended"); err != nil {
+		t.Fatalf("AppendToSection returned unexpected error: %v", err)
+	}
+	got, _ := m.ReadFile("notes.md")
+	if !strings.Contains(got, "- appended") {
+		t.Errorf("expected appended content at end of file, got: %q", got)
+	}
+}
+
+func TestManager_AppendToSection_RejectsPathTraversal(t *testing.T) {
+	m := newManager(t)
+	err := m.AppendToSection("../../etc/passwd", "## Heading", "content")
+	if err == nil {
+		t.Fatal("expected error for path traversal, got nil")
+	}
+}
+
 // ReadFile
 
 func writeFixture(t *testing.T, root, relPath, content string) {
