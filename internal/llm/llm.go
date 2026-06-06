@@ -70,22 +70,29 @@ var toolDefinitions = []any{
 	searchChatHistoryToolDefinition,
 	webSearchToolDefinition,
 	webFetchToolDefinition,
+	codeExecutionToolDefinition,
 }
 
 // webSearchToolDefinition is the Anthropic-native web search tool.
 var webSearchToolDefinition = map[string]any{
-	"type":     "web_search_20250305",
+	"type":     "web_search_20260209",
 	"name":     "web_search",
 	"max_uses": 5,
 }
 
 // webFetchToolDefinition is the Anthropic-native web fetch tool.
-// cache_control is placed here (last in toolDefinitions) so Anthropic caches
-// the entire tool list on every request.
 var webFetchToolDefinition = map[string]any{
-	"type":          "web_fetch_20250910",
-	"name":          "web_fetch",
-	"max_uses":      5,
+	"type":     "web_fetch_20260209",
+	"name":     "web_fetch",
+	"max_uses": 5,
+}
+
+// codeExecutionToolDefinition enables dynamic filtering for web_search and
+// web_fetch: Claude filters retrieved content before it lands in the context
+// window, reducing token consumption. cache_control is placed here (last in
+// toolDefinitions) so Anthropic caches the entire tool list on every request.
+var codeExecutionToolDefinition = map[string]any{
+	"type":          "code_execution_20260120",
 	"cache_control": map[string]any{"type": "ephemeral"},
 }
 

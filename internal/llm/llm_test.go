@@ -901,6 +901,100 @@ func TestClient_Stream_IncludesWebSearchTool(t *testing.T) {
 
 
 
+func TestClient_Stream_WebSearchToolUses2026Version(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Tools []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		for _, tool := range body.Tools {
+			if tool.Name == "web_search" && tool.Type != "web_search_20260209" {
+				t.Errorf("web_search tool must use version web_search_20260209, got %q", tool.Type)
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
+func TestClient_Stream_WebFetchToolUses2026Version(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Tools []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		for _, tool := range body.Tools {
+			if tool.Name == "web_fetch" && tool.Type != "web_fetch_20260209" {
+				t.Errorf("web_fetch tool must use version web_fetch_20260209, got %q", tool.Type)
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
+func TestClient_Stream_IncludesCodeExecutionTool(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Tools []struct {
+				Type string `json:"type"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		found := false
+		for _, tool := range body.Tools {
+			if tool.Type == "code_execution_20260120" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected code_execution_20260120 tool in request")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, anthropicSSEResponse("ok"))
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(llm.Config{APIKey: "test-key", BaseURL: srv.URL})
+	body, err := client.Stream(t.Context(), "test system prompt", []store.Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+}
+
 // ── DescribeImage edge cases ───────────────────────────────────────────────────
 
 func TestClient_DescribeImage_ReturnsEmptyStringWhenNoTextBlock(t *testing.T) {
