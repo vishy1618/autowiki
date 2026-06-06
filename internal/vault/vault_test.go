@@ -18,6 +18,55 @@ func newManager(t *testing.T) *vault.Manager {
 	return vault.NewManager(t.TempDir())
 }
 
+// PatchFile
+
+func TestManager_PatchFile_ReplacesMatchingSubstring(t *testing.T) {
+	m := newManager(t)
+	if err := m.WriteFile("notes.md", "# Title\n\nold paragraph\n\n## Section\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PatchFile("notes.md", "old paragraph", "new paragraph"); err != nil {
+		t.Fatalf("PatchFile returned unexpected error: %v", err)
+	}
+	got, _ := m.ReadFile("notes.md")
+	if !strings.Contains(got, "new paragraph") {
+		t.Errorf("want new paragraph in file, got: %q", got)
+	}
+	if strings.Contains(got, "old paragraph") {
+		t.Errorf("old paragraph should be gone, got: %q", got)
+	}
+}
+
+func TestManager_PatchFile_ErrorWhenOldStrNotFound(t *testing.T) {
+	m := newManager(t)
+	if err := m.WriteFile("notes.md", "some content"); err != nil {
+		t.Fatal(err)
+	}
+	err := m.PatchFile("notes.md", "missing text", "replacement")
+	if err == nil {
+		t.Fatal("expected error when old_str not found, got nil")
+	}
+}
+
+func TestManager_PatchFile_ErrorWhenOldStrIsAmbiguous(t *testing.T) {
+	m := newManager(t)
+	if err := m.WriteFile("notes.md", "repeat repeat"); err != nil {
+		t.Fatal(err)
+	}
+	err := m.PatchFile("notes.md", "repeat", "once")
+	if err == nil {
+		t.Fatal("expected error when old_str matches multiple times, got nil")
+	}
+}
+
+func TestManager_PatchFile_RejectsPathTraversal(t *testing.T) {
+	m := newManager(t)
+	err := m.PatchFile("../../etc/passwd", "old", "new")
+	if err == nil {
+		t.Fatal("expected error for path traversal, got nil")
+	}
+}
+
 // ReadFile
 
 func writeFixture(t *testing.T, root, relPath, content string) {

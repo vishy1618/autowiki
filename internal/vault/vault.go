@@ -420,6 +420,30 @@ func (m *Manager) ReadFilePartial(path string, maxChars int) (string, error) {
 	return string(data), nil
 }
 
+// PatchFile replaces the first (and only) occurrence of oldStr in the file at
+// path with newStr. Returns an error if oldStr is not found or is ambiguous
+// (occurs more than once).
+func (m *Manager) PatchFile(path, oldStr, newStr string) error {
+	full, err := m.safePath(path)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+	count := strings.Count(content, oldStr)
+	if count == 0 {
+		return fmt.Errorf("patch_page: %q not found in %s", oldStr, path)
+	}
+	if count > 1 {
+		return fmt.Errorf("patch_page: %q is ambiguous (%d matches) in %s — widen the anchor string", oldStr, count, path)
+	}
+	patched := strings.Replace(content, oldStr, newStr, 1)
+	return os.WriteFile(full, []byte(patched), 0o644)
+}
+
 // contentDisposition returns a Content-Disposition header value for the given
 // filename. Plain ASCII filenames (letters, digits, '.', '-', '_') use the
 // quoted-string form; all others use RFC 5987 UTF-8 percent-encoding.
