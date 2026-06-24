@@ -121,6 +121,10 @@ const MaxSummaryLen = 200
 // maxDreamToolCalls is the cap on tool dispatches per consolidation run.
 const maxDreamToolCalls = 50
 
+// maxSSELineSize caps a single SSE line read from the Anthropic stream,
+// past bufio's default 64KB scanner buffer.
+const maxSSELineSize = 10 << 20 // 10MB
+
 // Consolidate performs one overnight vault consolidation using the agentic
 // loop and appends start/end log entries to log.md.
 func Consolidate(ctx context.Context, vm *vault.Manager, streamer Streamer) error {
@@ -187,6 +191,7 @@ func requestSummary(ctx context.Context, cs store.ChatStore, sessionID string, s
 func extractText(body io.Reader) string {
 	var sb strings.Builder
 	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {

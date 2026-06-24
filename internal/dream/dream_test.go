@@ -200,6 +200,29 @@ func TestConsolidate_SummaryIsTruncatedToMaxLength(t *testing.T) {
 	}
 }
 
+func TestConsolidate_SummaryLineExceedingDefaultScannerBuffer_IsStillCaptured(t *testing.T) {
+	// Arrange — the summary response's single SSE line exceeds bufio's
+	// default 64KB scanner buffer.
+	dir := t.TempDir()
+	vm := vault.NewManager(dir)
+	longSummary := strings.Repeat("b", 70000)
+	llm := &stubLLM{bodies: []string{minimalSSE, sseWithText(longSummary)}}
+
+	// Act
+	err := dream.Consolidate(context.Background(), vm, llm)
+
+	// Assert — the truncated form of the full long summary must appear,
+	// proving extractText read past the first 64KB rather than dropping it.
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantSummary := longSummary[:dream.MaxSummaryLen-1] + "…"
+	logContent, _ := vm.ReadFile("log.md")
+	if !strings.Contains(logContent, wantSummary) {
+		t.Errorf("expected log to contain truncated long summary, got: %q", logContent)
+	}
+}
+
 func TestConsolidate_LogLinesContainNoNewlines(t *testing.T) {
 	// Arrange
 	dir := t.TempDir()
