@@ -22,6 +22,7 @@ const minimalConfig = `
 vault_path: ${VAULT_PATH}
 server_port: ${PORT}
 anthropic_api_key: ${ANTHROPIC_API_KEY}
+anthropic_base_url: ${ANTHROPIC_BASE_URL}
 pebble_path: ${PEBBLE_PATH}
 chat_model: haiku
 dream_model: sonnet
@@ -86,6 +87,40 @@ func TestConfig_Load_DefaultsBaseURLToLocalhost(t *testing.T) {
 	}
 	if cfg.BaseURL != "http://localhost:9090" {
 		t.Errorf("expected default BaseURL %q, got %q", "http://localhost:9090", cfg.BaseURL)
+	}
+}
+
+func TestConfig_Load_ReadsAnthropicBaseURLFromEnv(t *testing.T) {
+	// Arrange
+	setMinimalEnv(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "http://localhost:8787")
+	path := writeConfig(t, minimalConfig)
+
+	// Act
+	cfg, err := config.Load(path)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AnthropicBaseURL != "http://localhost:8787" {
+		t.Errorf("expected AnthropicBaseURL %q, got %q", "http://localhost:8787", cfg.AnthropicBaseURL)
+	}
+}
+
+func TestConfig_Load_DefaultsAnthropicBaseURLToEmpty(t *testing.T) {
+	// When ANTHROPIC_BASE_URL is not set, AnthropicBaseURL stays empty so
+	// llm.NewClient's own default (api.anthropic.com) applies.
+	setMinimalEnv(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "") // explicitly unset
+	path := writeConfig(t, minimalConfig)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AnthropicBaseURL != "" {
+		t.Errorf("expected empty AnthropicBaseURL, got %q", cfg.AnthropicBaseURL)
 	}
 }
 

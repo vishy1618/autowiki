@@ -2,6 +2,7 @@ vault_path: ${VAULT_PATH}
 server_port: ${PORT}
 base_url: ${BASE_URL}
 anthropic_api_key: ${ANTHROPIC_API_KEY}
+anthropic_base_url: ${ANTHROPIC_BASE_URL}
 pebble_path: ${PEBBLE_PATH}
 chat_model: ${CHAT_MODEL}
 dream_model: ${DREAM_MODEL}

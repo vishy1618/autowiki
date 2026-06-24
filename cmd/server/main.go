@@ -50,13 +50,15 @@ func main() {
 	chats := store.NewPebbleChatStore(db)
 	// Chat and attachment description use a fast model (default: Haiku).
 	haikuClient := llm.NewClient(llm.Config{
-		APIKey: cfg.AnthropicAPIKey,
-		Model:  cfg.ChatModel,
+		APIKey:  cfg.AnthropicAPIKey,
+		Model:   cfg.ChatModel,
+		BaseURL: cfg.AnthropicBaseURL,
 	})
 	// Dream consolidation uses a capable model (default: Sonnet).
 	sonnetClient := llm.NewClient(llm.Config{
-		APIKey: cfg.AnthropicAPIKey,
-		Model:  cfg.DreamModel,
+		APIKey:  cfg.AnthropicAPIKey,
+		Model:   cfg.DreamModel,
+		BaseURL: cfg.AnthropicBaseURL,
 	})
 	vm := vault.NewManager(cfg.VaultPath)
 

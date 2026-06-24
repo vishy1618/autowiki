@@ -8,16 +8,17 @@ import (
 )
 
 type Config struct {
-	VaultPath       string      `yaml:"vault_path"`
-	ServerPort      int         `yaml:"server_port"`
-	BaseURL         string      `yaml:"base_url"`
-	AnthropicAPIKey string      `yaml:"anthropic_api_key"`
-	PebblePath      string      `yaml:"pebble_path"`
-	ChatModel       string      `yaml:"chat_model"`
-	DreamModel      string      `yaml:"dream_model"`
-	Auth            AuthConfig      `yaml:"auth"`
-	Dream           DreamConfig     `yaml:"dream"`
-	DriveSync       DriveSyncConfig `yaml:"drive_sync"`
+	VaultPath        string          `yaml:"vault_path"`
+	ServerPort       int             `yaml:"server_port"`
+	BaseURL          string          `yaml:"base_url"`
+	AnthropicAPIKey  string          `yaml:"anthropic_api_key"`
+	AnthropicBaseURL string          `yaml:"anthropic_base_url"`
+	PebblePath       string          `yaml:"pebble_path"`
+	ChatModel        string          `yaml:"chat_model"`
+	DreamModel       string          `yaml:"dream_model"`
+	Auth             AuthConfig      `yaml:"auth"`
+	Dream            DreamConfig     `yaml:"dream"`
+	DriveSync        DriveSyncConfig `yaml:"drive_sync"`
 }
 
 type AuthConfig struct {

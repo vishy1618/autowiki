@@ -47,6 +47,7 @@ PORT                    defaults to 8080
 VAULT_PATH              path to the Obsidian vault (outside the repo)
 PEBBLE_PATH             path to Pebble data directory
 ANTHROPIC_API_KEY
+ANTHROPIC_BASE_URL      optional; overrides the Anthropic API base URL (default: https://api.anthropic.com)
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 ALLOWED_EMAIL           single whitelisted email for Google sign-in
