@@ -84,9 +84,10 @@ var webSearchToolDefinition = map[string]any{
 
 // webFetchToolDefinition is the Anthropic-native web fetch tool.
 var webFetchToolDefinition = map[string]any{
-	"type":     "web_fetch_20260209",
-	"name":     "web_fetch",
-	"max_uses": 5,
+	"type":               "web_fetch_20260209",
+	"name":               "web_fetch",
+	"max_uses":           5,
+	"max_content_tokens": 100000,
 }
 
 // codeExecutionToolDefinition enables dynamic filtering for web_search and
@@ -262,7 +263,6 @@ var writePagesTool = map[string]any{
 		"required": []string{"pages"},
 	},
 }
-
 
 // Attachment is a file to be sent inline in the current chat turn.
 // Only PDFs are supported; the Data field holds the raw file bytes.

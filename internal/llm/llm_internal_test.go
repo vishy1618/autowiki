@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestWebFetchToolDefinition_CapsContentSize(t *testing.T) {
+	maxContentTokens, ok := webFetchToolDefinition["max_content_tokens"]
+	if !ok {
+		t.Fatal("want webFetchToolDefinition to set max_content_tokens, got none")
+	}
+	if maxContentTokens.(int) <= 0 {
+		t.Errorf("want positive max_content_tokens, got %v", maxContentTokens)
+	}
+}
+
 func TestNewClient_DoesNotUseDefaultTransport(t *testing.T) {
 	c := NewClient(Config{APIKey: "test"})
 	if c.httpClient == http.DefaultClient {
