@@ -177,6 +177,22 @@ func TestScanStream_SaveToVault_EmitsGenericStatusNotPathSpecific(t *testing.T) 
 	}
 }
 
+func TestScanStream_LineExceedingDefaultScannerBuffer_DoesNotError(t *testing.T) {
+	longText := strings.Repeat("a", 70000) // exceeds bufio.MaxScanTokenSize (64KB)
+	sse := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"" +
+		longText + "\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+	var buf strings.Builder
+	result := scanStream(strings.NewReader(sse), &buf, false, nil)
+
+	if result.scanErr != nil {
+		t.Fatalf("unexpected scan error on oversized line: %v", result.scanErr)
+	}
+	if result.assembled != longText {
+		t.Errorf("want assembled text of length %d, got length %d", len(longText), len(result.assembled))
+	}
+}
+
 // ── writeSSE ──────────────────────────────────────────────────────────────────
 
 func TestWriteSSE_FormatsEventAndDataOnSeparateLines(t *testing.T) {

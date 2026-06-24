@@ -9,6 +9,12 @@ import (
 	"strings"
 )
 
+// maxSSELineSize caps a single SSE line read from the Anthropic stream.
+// Server-side tools (web_fetch, web_search) can return a whole fetched page
+// as one content block, which arrives as a single line far past bufio's
+// default 64KB scanner buffer.
+const maxSSELineSize = 10 << 20 // 10MB
+
 // writeSSE writes a single SSE event to w.
 func writeSSE(w io.Writer, event, data string) {
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
@@ -108,6 +114,7 @@ func scanStream(body io.Reader, w io.Writer, canFlush bool, flusher http.Flusher
 	}
 
 	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
 	var lastEvent string
 	for scanner.Scan() {
 		line := scanner.Text()
