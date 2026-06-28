@@ -81,7 +81,11 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 			_ = json.Unmarshal([]byte(tc.json), &input)
 			writeSSE(w, "status", fmt.Sprintf(`{"message":"Reading %s\u2026"}`, input.Path))
 			flush()
-			content, _ := r.vault.ReadFile(input.Path)
+			content, err := r.vault.ReadFile(input.Path)
+			if err != nil {
+				r.storeToolResult(sessionID, tc.id, err.Error(), true)
+				continue
+			}
 			r.storeToolResult(sessionID, tc.id, content, false)
 
 		case "search_vault":
@@ -91,7 +95,11 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 			_ = json.Unmarshal([]byte(tc.json), &input)
 			writeSSE(w, "status", fmt.Sprintf(`{"message":"Searching for %s\u2026"}`, input.Query))
 			flush()
-			results, _ := r.vault.SearchPages(input.Query, 10)
+			results, err := r.vault.SearchPages(input.Query, 10)
+			if err != nil {
+				r.storeToolResult(sessionID, tc.id, err.Error(), true)
+				continue
+			}
 			resultJSON, _ := json.Marshal(results)
 			r.storeToolResult(sessionID, tc.id, string(resultJSON), false)
 
@@ -103,7 +111,11 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 			_ = json.Unmarshal([]byte(tc.json), &input)
 			writeSSE(w, "status", `{"message":"Listing vault\u2026"}`)
 			flush()
-			entries, _ := r.vault.ListVault(input.Path, input.Recursive)
+			entries, err := r.vault.ListVault(input.Path, input.Recursive)
+			if err != nil {
+				r.storeToolResult(sessionID, tc.id, err.Error(), true)
+				continue
+			}
 			resultJSON, _ := json.Marshal(entries)
 			r.storeToolResult(sessionID, tc.id, string(resultJSON), false)
 
@@ -115,7 +127,11 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 			_ = json.Unmarshal([]byte(tc.json), &input)
 			writeSSE(w, "status", fmt.Sprintf(`{"message":"Reading %s\u2026"}`, input.Path))
 			flush()
-			content, _ := r.vault.ReadFilePartial(input.Path, input.MaxChars)
+			content, err := r.vault.ReadFilePartial(input.Path, input.MaxChars)
+			if err != nil {
+				r.storeToolResult(sessionID, tc.id, err.Error(), true)
+				continue
+			}
 			r.storeToolResult(sessionID, tc.id, content, false)
 
 		case "move_page":

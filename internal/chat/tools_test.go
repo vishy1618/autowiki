@@ -22,6 +22,24 @@ func newRunnerForTools(t *testing.T) (*AgenticRunner, store.ChatStore, *vault.Ma
 	return r, cs, vm, vaultDir
 }
 
+// toolResultFromStore returns the first tool_result message in the session
+// decoded into a map, or fails the test if none found.
+func toolResultFromStore(t *testing.T, cs store.ChatStore, sessionID string) map[string]any {
+	t.Helper()
+	msgs, _ := cs.ListMessages(sessionID)
+	for _, m := range msgs {
+		if m.Role == "tool_result" {
+			var tr map[string]any
+			if err := json.Unmarshal([]byte(m.Content), &tr); err != nil {
+				t.Fatalf("unmarshal tool_result: %v", err)
+			}
+			return tr
+		}
+	}
+	t.Fatal("no tool_result message found in store")
+	return nil
+}
+
 // ── storeToolResult ───────────────────────────────────────────────────────────
 
 func TestStoreToolResult_PersistsToolResultRole(t *testing.T) {
@@ -199,5 +217,73 @@ func TestApplyVaultWrites_ValidPages_StoresSuccessToolResult(t *testing.T) {
 	}
 	if tr.IsError {
 		t.Error("want is_error=false for successful write, got true")
+	}
+}
+
+// ── dispatchToolCalls: read tool error propagation ────────────────────────────
+
+func TestDispatch_SearchVault_StoresErrorResultOnVaultFailure(t *testing.T) {
+	cs := store.NewMemChatStore()
+	vaultDir := t.TempDir()
+	vm := vault.NewManager(vaultDir)
+	r := NewAgenticRunner(nil, cs, vm)
+	sess, _ := cs.ResolveSession()
+
+	// Remove the vault root so WalkDir fails.
+	os.RemoveAll(vaultDir)
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "search_vault", json: `{"query":"anything"}`},
+	}, false, nil)
+
+	tr := toolResultFromStore(t, cs, sess.ID)
+	if isErr, _ := tr["is_error"].(bool); !isErr {
+		t.Errorf("want is_error=true when vault search fails, got result: %v", tr)
+	}
+}
+
+func TestDispatch_ListVault_StoresErrorResultOnVaultFailure(t *testing.T) {
+	r, cs, _, _ := newRunnerForTools(t)
+	sess, _ := cs.ResolveSession()
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "list_vault", json: `{"path":"../../escape"}`},
+	}, false, nil)
+
+	tr := toolResultFromStore(t, cs, sess.ID)
+	if isErr, _ := tr["is_error"].(bool); !isErr {
+		t.Errorf("want is_error=true when vault list fails, got result: %v", tr)
+	}
+}
+
+func TestDispatch_ReadPagePartial_StoresErrorResultOnVaultFailure(t *testing.T) {
+	r, cs, _, _ := newRunnerForTools(t)
+	sess, _ := cs.ResolveSession()
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "read_page_partial", json: `{"path":"../../escape.md","max_chars":100}`},
+	}, false, nil)
+
+	tr := toolResultFromStore(t, cs, sess.ID)
+	if isErr, _ := tr["is_error"].(bool); !isErr {
+		t.Errorf("want is_error=true when vault partial read fails, got result: %v", tr)
+	}
+}
+
+func TestDispatch_ReadPage_StoresErrorResultOnVaultFailure(t *testing.T) {
+	r, cs, _, _ := newRunnerForTools(t)
+	sess, _ := cs.ResolveSession()
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "read_page", json: `{"path":"../../escape.md"}`},
+	}, false, nil)
+
+	tr := toolResultFromStore(t, cs, sess.ID)
+	if isErr, _ := tr["is_error"].(bool); !isErr {
+		t.Errorf("want is_error=true when vault read fails, got result: %v", tr)
 	}
 }
