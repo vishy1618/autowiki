@@ -287,3 +287,18 @@ func TestDispatch_ReadPage_StoresErrorResultOnVaultFailure(t *testing.T) {
 		t.Errorf("want is_error=true when vault read fails, got result: %v", tr)
 	}
 }
+
+func TestDispatch_ReadPage_StoresErrorResultWhenFileDoesNotExist(t *testing.T) {
+	r, cs, _, _ := newRunnerForTools(t)
+	sess, _ := cs.ResolveSession()
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "read_page", json: `{"path":"no/such/page.md"}`},
+	}, false, nil)
+
+	tr := toolResultFromStore(t, cs, sess.ID)
+	if isErr, _ := tr["is_error"].(bool); !isErr {
+		t.Errorf("want is_error=true for missing file, got result: %v", tr)
+	}
+}

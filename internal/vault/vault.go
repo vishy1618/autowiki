@@ -137,7 +137,11 @@ func (m *Manager) AppendLog(entry string) error {
 
 // ReadIndex is a convenience wrapper that reads index.md from the vault root.
 func (m *Manager) ReadIndex() (string, error) {
-	return m.ReadFile("index.md")
+	content, err := m.ReadFile("index.md")
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	return content, err
 }
 
 // ReadAttachmentData reads the raw bytes of a saved attachment by its
@@ -268,9 +272,6 @@ func (m *Manager) ReadFile(path string) (string, error) {
 		return "", err
 	}
 	data, err := os.ReadFile(full)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
 	if err != nil {
 		return "", err
 	}
@@ -627,7 +628,7 @@ Concise present-tense prose. Bullet lists for enumerations and steps, not explan
 // template if it does not already exist.
 func (m *Manager) EnsureSchema() (string, error) {
 	content, err := m.ReadFile("schema.md")
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 	if content != "" {

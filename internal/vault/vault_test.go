@@ -2,6 +2,7 @@ package vault_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -153,16 +154,16 @@ func writeFixture(t *testing.T, root, relPath, content string) {
 	}
 }
 
-func TestManager_ReadFile_ReturnEmptyStringWhenFileNotFound(t *testing.T) {
+func TestManager_ReadFile_ErrorsWhenFileNotFound(t *testing.T) {
 	m := newManager(t)
 
-	got, err := m.ReadFile("missing.md")
+	_, err := m.ReadFile("missing.md")
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("want error for missing file, got nil")
 	}
-	if got != "" {
-		t.Fatalf("want empty string, got %q", got)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("want error wrapping os.ErrNotExist, got: %v", err)
 	}
 }
 
@@ -485,19 +486,20 @@ func TestManager_WriteFile_RejectsEscapingPath(t *testing.T) {
 
 func TestManager_ReadFile_AcceptsValidRelativePaths(t *testing.T) {
 	tests := []struct {
-		name string
-		path string
+		name     string
+		path     string
+		fixture  string // file to write before reading
 	}{
-		{"simple", "notes.md"},
-		{"nested", "a/b/c.md"},
-		{"redundant dot", "./notes.md"},
-		{"non-escaping parent", "a/../notes.md"},
+		{"simple", "notes.md", "notes.md"},
+		{"nested", "a/b/c.md", "a/b/c.md"},
+		{"redundant dot", "./notes.md", "notes.md"},
+		{"non-escaping parent", "a/../notes.md", "notes.md"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			m := vault.NewManager(dir)
-			writeFixture(t, dir, "notes.md", "content")
+			writeFixture(t, dir, tt.fixture, "content")
 
 			_, err := m.ReadFile(tt.path)
 
