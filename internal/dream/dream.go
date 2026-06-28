@@ -101,11 +101,13 @@ func (r *Runner) Start(ctx context.Context) {
 	}
 }
 
-const dreamSystemPrompt = `You are an autonomous wiki curator performing an overnight consolidation of a personal Obsidian vault.
+const DreamSystemPrompt = `You are an autonomous wiki curator performing an overnight consolidation of a personal Obsidian vault.
 
 AUTONOMY RULE: Act immediately and decisively. Never ask for confirmation, permission, or whether to proceed. Make all changes now — do not prepare changes and then ask to save them.
 
 Your goal is to improve the structure, cross-references, and completeness of the vault. Start with list_vault to get an overview, then work in small batches: use read_page_partial (not read_page) to scan pages efficiently, and save improvements immediately. Do not read every page before saving anything.
+
+HIERARCHY: The vault uses a subdirectory-based structure. Each directory — including the root — has an index.md listing only its immediate contents (files and subdirectories) with a one-line description per entry. As part of consolidation, ensure every directory has an up-to-date index.md; create or update it if missing or stale. Root index.md lists only top-level subdirectories, not individual pages.
 
 TOKEN EFFICIENCY: Prefer read_page_partial over read_page. For targeted edits use patch_page (replace a unique passage) or append_to_section (add to a section) — both avoid a full page read/rewrite. Only use write_pages when creating a new page or rewriting a page in full. Work and save in batches of 5–10 pages.
 
@@ -147,13 +149,13 @@ func Consolidate(ctx context.Context, vm *vault.Manager, streamer Streamer) erro
 		return fmt.Errorf("dream: list messages: %w", err)
 	}
 
-	firstBody, err := streamer.Stream(ctx, dreamSystemPrompt, history, nil)
+	firstBody, err := streamer.Stream(ctx, DreamSystemPrompt, history, nil)
 	if err != nil {
 		return fmt.Errorf("dream: initial stream: %w", err)
 	}
 
 	runner := chat.NewAgenticRunner(streamer, cs, vm)
-	if err := runner.Run(ctx, session.ID, dreamSystemPrompt, firstBody, io.Discard, maxDreamToolCalls); err != nil {
+	if err := runner.Run(ctx, session.ID, DreamSystemPrompt, firstBody, io.Discard, maxDreamToolCalls); err != nil {
 		_ = vm.AppendLog(fmt.Sprintf("dream ended - error: %v", err))
 		return fmt.Errorf("dream: agentic run: %w", err)
 	}
@@ -175,7 +177,7 @@ func requestSummary(ctx context.Context, cs store.ChatStore, sessionID string, s
 	if err != nil {
 		return "run completed"
 	}
-	body, err := streamer.Stream(ctx, dreamSystemPrompt, history, nil)
+	body, err := streamer.Stream(ctx, DreamSystemPrompt, history, nil)
 	if err != nil {
 		return "run completed"
 	}

@@ -604,9 +604,11 @@ func (m *Manager) ServeFile(w http.ResponseWriter, r *http.Request, relPath stri
 // defaultSchema is the template written to schema.md when it does not exist.
 const defaultSchema = `# Wiki Schema
 
-## Folders
-Lowercase, topic-based. Nest only when a topic grows large.
-Examples: ` + "`programming/go.md`" + `, ` + "`science/biology/cell-theory.md`" + `
+## Structure
+Pages live in topic-based subdirectories. Common top-level directories: ` + "`people/`" + `, ` + "`projects/`" + `, ` + "`concepts/`" + `, ` + "`references/`" + `.
+Each directory has an index.md listing its immediate contents with a one-line description per entry.
+The vault root index.md lists only top-level subdirectories — not individual pages.
+Nest subdirectories only when a topic grows large enough to warrant it.
 
 ## Files
 Lowercase hyphenated noun phrases. Example: ` + "`go-interfaces.md`" + `

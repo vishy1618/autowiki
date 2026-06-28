@@ -20,6 +20,17 @@ func newManager(t *testing.T) *vault.Manager {
 
 // PatchFile
 
+func TestEnsureSchema_DefaultDescribesPerDirectoryIndex(t *testing.T) {
+	m := newManager(t)
+	schema, err := m.EnsureSchema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(schema, "index.md") {
+		t.Errorf("default schema should mention per-directory index.md, got:\n%s", schema)
+	}
+}
+
 func TestManager_PatchFile_ReplacesMatchingSubstring(t *testing.T) {
 	m := newManager(t)
 	if err := m.WriteFile("notes.md", "# Title\n\nold paragraph\n\n## Section\n"); err != nil {
@@ -850,7 +861,7 @@ func TestManager_EnsureSchema_DefaultTemplateContainsExpectedSections(t *testing
 
 	content, _ := m.EnsureSchema()
 
-	for _, section := range []string{"## Folders", "## Files", "## Links", "## Headings", "## Style"} {
+	for _, section := range []string{"## Structure", "## Files", "## Links", "## Headings", "## Style"} {
 		if !strings.Contains(content, section) {
 			t.Errorf("default schema missing section %q", section)
 		}

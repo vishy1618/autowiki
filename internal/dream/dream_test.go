@@ -244,3 +244,26 @@ func TestConsolidate_LogLinesContainNoNewlines(t *testing.T) {
 		t.Errorf("log entries must not be followed by blank lines, got: %q", logContent)
 	}
 }
+
+func TestDreamSystemPrompt_HierarchicalIndexInstructions(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantStr string
+	}{
+		{
+			name:    "instructs ensuring every directory has an index.md",
+			wantStr: "index.md",
+		},
+		{
+			name:    "instructs root index.md lists only top-level subdirectories",
+			wantStr: "Root index.md lists only top-level subdirectories",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(dream.DreamSystemPrompt, tt.wantStr) {
+				t.Errorf("dream system prompt missing %q", tt.wantStr)
+			}
+		})
+	}
+}
