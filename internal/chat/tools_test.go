@@ -220,6 +220,110 @@ func TestApplyVaultWrites_ValidPages_StoresSuccessToolResult(t *testing.T) {
 	}
 }
 
+// ── dispatchToolCalls: vault event payload shape ──────────────────────────────
+
+func TestDispatch_PatchPage_VaultEventHasChangesPayload(t *testing.T) {
+	r, cs, vm, _ := newRunnerForTools(t)
+	_ = vm.WriteFile("notes.md", "old line")
+	sess, _ := cs.ResolveSession()
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "patch_page", json: `{"path":"notes.md","old_str":"old line","new_str":"new line"}`},
+	}, false, nil)
+
+	out := buf.String()
+	if !strings.Contains(out, `"changes"`) {
+		t.Errorf("vault event missing 'changes' field, got: %q", out)
+	}
+	if !strings.Contains(out, `"notes.md"`) {
+		t.Errorf("vault event missing path in changes, got: %q", out)
+	}
+}
+
+func TestDispatch_SaveAttachmentNotes_EmitsVaultEventWithChangesPayload(t *testing.T) {
+	r, cs, vm, _ := newRunnerForTools(t)
+	attachPath := "_attachments/report.pdf"
+	_ = vm.WriteFile(attachPath, "%PDF")
+	_ = vm.WriteAttachmentMeta(attachPath, vault.AttachmentMeta{
+		ID: "att1", OriginalName: "report.pdf", MediaType: "application/pdf",
+	})
+	sess, _ := cs.ResolveSession()
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "save_attachment_notes", json: `{"path":"_attachments/report.pdf","notes":"key facts"}`},
+	}, false, nil)
+
+	out := buf.String()
+	if !strings.Contains(out, "event: vault") {
+		t.Errorf("want vault SSE event for save_attachment_notes, got: %q", out)
+	}
+	if !strings.Contains(out, `"changes"`) {
+		t.Errorf("vault event missing 'changes' field, got: %q", out)
+	}
+	if !strings.Contains(out, `_attachments/report.pdf`) {
+		t.Errorf("vault event missing attachment path in changes, got: %q", out)
+	}
+}
+
+func TestDispatch_DeleteItem_VaultEventHasChangesPayload(t *testing.T) {
+	r, cs, vm, _ := newRunnerForTools(t)
+	_ = vm.WriteFile("trash.md", "delete me")
+	sess, _ := cs.ResolveSession()
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "delete_item", json: `{"path":"trash.md","recursive":false}`},
+	}, false, nil)
+
+	out := buf.String()
+	if !strings.Contains(out, `"changes"`) {
+		t.Errorf("vault event missing 'changes' field, got: %q", out)
+	}
+	if !strings.Contains(out, `"trash.md"`) {
+		t.Errorf("vault event missing path in changes, got: %q", out)
+	}
+}
+
+func TestDispatch_MovePage_VaultEventHasChangesPayload(t *testing.T) {
+	r, cs, vm, _ := newRunnerForTools(t)
+	_ = vm.WriteFile("old.md", "content")
+	sess, _ := cs.ResolveSession()
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "move_page", json: `{"from":"old.md","to":"new.md"}`},
+	}, false, nil)
+
+	out := buf.String()
+	if !strings.Contains(out, `"changes"`) {
+		t.Errorf("vault event missing 'changes' field, got: %q", out)
+	}
+	if !strings.Contains(out, `"new.md"`) {
+		t.Errorf("vault event missing destination path in changes, got: %q", out)
+	}
+}
+
+func TestDispatch_AppendToSection_VaultEventHasChangesPayload(t *testing.T) {
+	r, cs, vm, _ := newRunnerForTools(t)
+	_ = vm.WriteFile("notes.md", "# Notes\n\n## Log\n\nexisting\n")
+	sess, _ := cs.ResolveSession()
+
+	var buf strings.Builder
+	r.dispatchToolCalls(&buf, sess.ID, []toolCall{
+		{id: "tc1", name: "append_to_section", json: `{"path":"notes.md","heading":"## Log","content":"- new"}`},
+	}, false, nil)
+
+	out := buf.String()
+	if !strings.Contains(out, `"changes"`) {
+		t.Errorf("vault event missing 'changes' field, got: %q", out)
+	}
+	if !strings.Contains(out, `"notes.md"`) {
+		t.Errorf("vault event missing path in changes, got: %q", out)
+	}
+}
+
 // ── dispatchToolCalls: read tool error propagation ────────────────────────────
 
 func TestDispatch_SearchVault_StoresErrorResultOnVaultFailure(t *testing.T) {

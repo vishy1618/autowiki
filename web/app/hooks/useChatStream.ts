@@ -126,7 +126,8 @@ export function useChatStream({ setMessages, navigate }: Options) {
                   const next = [...prev];
                   const last = next[next.length - 1];
                   if (last && isAssistantMessage(last)) {
-                    next[next.length - 1] = { ...last, vaultChanges: changes };
+                    const existing = (last as { vaultChanges?: VaultChange[] }).vaultChanges ?? [];
+                    next[next.length - 1] = { ...last, vaultChanges: [...existing, ...changes] };
                   }
                   return next;
                 });

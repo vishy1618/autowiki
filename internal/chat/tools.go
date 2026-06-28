@@ -149,7 +149,7 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 			} else {
 				_ = r.vault.AppendLog(fmt.Sprintf("moved %s → %s", input.From, input.To))
 				r.storeToolResult(sessionID, tc.id, fmt.Sprintf("moved %s to %s", input.From, input.To), false)
-				payload, _ := json.Marshal(map[string]any{"action": "moved", "from": input.From, "to": input.To})
+				payload, _ := json.Marshal(map[string]any{"changes": []map[string]any{{"path": input.To}}})
 				writeSSE(w, "vault", string(payload))
 				flush()
 			}
@@ -168,6 +168,9 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 				r.storeToolResult(sessionID, tc.id, err.Error(), true)
 			} else {
 				r.storeToolResult(sessionID, tc.id, "notes saved for "+input.Path, false)
+				payload, _ := json.Marshal(map[string]any{"changes": []map[string]any{{"path": input.Path}}})
+				writeSSE(w, "vault", string(payload))
+				flush()
 			}
 
 		case "delete_item":
@@ -187,7 +190,7 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 			} else {
 				_ = r.vault.AppendLog(fmt.Sprintf("deleted %s", input.Path))
 				r.storeToolResult(sessionID, tc.id, fmt.Sprintf("deleted %s", input.Path), false)
-				payload, _ := json.Marshal(map[string]any{"action": "deleted", "path": input.Path})
+				payload, _ := json.Marshal(map[string]any{"changes": []map[string]any{{"path": input.Path}}})
 				writeSSE(w, "vault", string(payload))
 				flush()
 			}
@@ -209,7 +212,7 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 			} else {
 				_ = r.vault.AppendLog(fmt.Sprintf("patched %s", input.Path))
 				r.storeToolResult(sessionID, tc.id, fmt.Sprintf("patched %s", input.Path), false)
-				payload, _ := json.Marshal(map[string]any{"action": "patched", "path": input.Path})
+				payload, _ := json.Marshal(map[string]any{"changes": []map[string]any{{"path": input.Path}}})
 				writeSSE(w, "vault", string(payload))
 				flush()
 			}
@@ -231,7 +234,7 @@ func (r *AgenticRunner) dispatchToolCalls(w io.Writer, sessionID string, toolCal
 			} else {
 				_ = r.vault.AppendLog(fmt.Sprintf("appended to %s section in %s", input.Heading, input.Path))
 				r.storeToolResult(sessionID, tc.id, fmt.Sprintf("appended to %s in %s", input.Heading, input.Path), false)
-				payload, _ := json.Marshal(map[string]any{"action": "appended", "path": input.Path, "heading": input.Heading})
+				payload, _ := json.Marshal(map[string]any{"changes": []map[string]any{{"path": input.Path}}})
 				writeSSE(w, "vault", string(payload))
 				flush()
 			}

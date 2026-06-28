@@ -163,6 +163,26 @@ describe("useChatStream", () => {
     expect(navigate).toHaveBeenCalledWith("/login", { replace: true });
   });
 
+  it("accumulates vault changes across multiple vault SSE events", async () => {
+    mockFetch({
+      "/api/chat": [chatSSE(
+        "event: vault\ndata: {\"changes\":[{\"path\":\"first.md\"}]}\n\n",
+        "event: vault\ndata: {\"changes\":[{\"path\":\"second.md\"}]}\n\n",
+        SSE_DONE
+      )],
+    });
+    const messages: ChatItem[] = [{ role: "assistant", content: "", streaming: true }];
+    const setMessages = vi.fn((updater: (prev: ChatItem[]) => ChatItem[]) => {
+      messages.splice(0, messages.length, ...updater([...messages]));
+    });
+    const { result } = renderHook(() => useChatStream({ setMessages, navigate: vi.fn() }));
+
+    await act(async () => { await result.current.doStream("save two things", [], 0); });
+
+    const last = messages[messages.length - 1] as { vaultChanges?: Array<{ path: string }> };
+    expect(last.vaultChanges).toEqual([{ path: "first.md" }, { path: "second.md" }]);
+  });
+
   it("attaches vault changes to the assistant bubble on vault SSE event", async () => {
     mockFetch({
       "/api/chat": [chatSSE(
